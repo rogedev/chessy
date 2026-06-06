@@ -407,3 +407,112 @@ fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool,
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn board_rect() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::splat(800.0))
+    }
+
+    fn center_of(file: u32, rank_from_top: u32) -> Pos2 {
+        // 100px squares; offset to the middle of the target cell.
+        Pos2::new(
+            file as f32 * 100.0 + 50.0,
+            rank_from_top as f32 * 100.0 + 50.0,
+        )
+    }
+
+    #[test]
+    fn pos_to_sq_maps_corners_unflipped() {
+        let rect = board_rect();
+        // Top-left is a8, bottom-left is a1, bottom-right is h1.
+        assert_eq!(
+            pos_to_sq(center_of(0, 0), rect, 100.0, false),
+            Some(Square::A8)
+        );
+        assert_eq!(
+            pos_to_sq(center_of(0, 7), rect, 100.0, false),
+            Some(Square::A1)
+        );
+        assert_eq!(
+            pos_to_sq(center_of(7, 7), rect, 100.0, false),
+            Some(Square::H1)
+        );
+    }
+
+    #[test]
+    fn pos_to_sq_maps_corner_flipped() {
+        let rect = board_rect();
+        // Flipped: top-left becomes h1.
+        assert_eq!(
+            pos_to_sq(center_of(0, 0), rect, 100.0, true),
+            Some(Square::H1)
+        );
+    }
+
+    #[test]
+    fn pos_to_sq_rejects_points_off_board() {
+        let rect = board_rect();
+        assert_eq!(pos_to_sq(Pos2::new(850.0, 50.0), rect, 100.0, false), None);
+        assert_eq!(pos_to_sq(Pos2::new(-10.0, 50.0), rect, 100.0, false), None);
+    }
+
+    #[test]
+    fn piece_symbol_maps_color_and_role() {
+        assert_eq!(
+            piece_symbol(Piece {
+                color: PieceColor::White,
+                role: Role::King
+            }),
+            "♔"
+        );
+        assert_eq!(
+            piece_symbol(Piece {
+                color: PieceColor::Black,
+                role: Role::Queen
+            }),
+            "♛"
+        );
+        assert_eq!(
+            piece_symbol(Piece {
+                color: PieceColor::White,
+                role: Role::Pawn
+            }),
+            "♙"
+        );
+    }
+
+    #[test]
+    fn is_promotion_move_detects_pawn_to_last_rank() {
+        let game = Game::from_fen("8/P7/8/8/8/8/8/k6K w - - 0 1").expect("valid fen");
+        assert!(is_promotion_move(&game, Square::A7, Square::A8));
+        // A king step is not a promotion.
+        assert!(!is_promotion_move(&game, Square::H1, Square::H2));
+    }
+
+    #[test]
+    fn try_make_move_executes_legal_and_rejects_illegal() {
+        let mut game = Game::new();
+        assert!(try_make_move(&mut game, Square::E2, Square::E4));
+        assert_eq!(game.cursor, 1);
+
+        let mut game2 = Game::new();
+        assert!(!try_make_move(&mut game2, Square::E2, Square::E5));
+        assert_eq!(game2.cursor, 0);
+    }
+
+    #[test]
+    fn try_make_promotion_move_promotes_to_chosen_role() {
+        let mut game = Game::from_fen("8/P7/8/8/8/8/8/k6K w - - 0 1").expect("valid fen");
+        assert!(try_make_promotion_move(
+            &mut game,
+            Square::A7,
+            Square::A8,
+            Role::Queen
+        ));
+        assert_eq!(game.cursor, 1);
+        assert_eq!(game.san, vec!["a8=Q+"]);
+    }
+}

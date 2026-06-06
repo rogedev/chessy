@@ -217,3 +217,45 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
         multipv,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_info_line() {
+        let line = "info depth 20 seldepth 28 multipv 1 score cp 31 nodes 1000 nps 50000 \
+                    time 20 pv e2e4 e7e5 g1f3";
+        let info = parse_info(line).expect("should parse");
+        assert_eq!(info.depth, 20);
+        assert_eq!(info.multipv, 1);
+        assert!(matches!(info.score, Score::Cp(31)));
+        assert_eq!(info.pv, vec!["e2e4", "e7e5", "g1f3"]);
+    }
+
+    #[test]
+    fn parses_mate_score() {
+        let info = parse_info("info depth 10 score mate 3 pv e2e4").expect("should parse");
+        assert!(matches!(info.score, Score::Mate(3)));
+    }
+
+    #[test]
+    fn skips_bound_token_without_corrupting_pv() {
+        let info =
+            parse_info("info depth 12 score cp 45 upperbound pv e2e4 e7e5").expect("should parse");
+        assert!(matches!(info.score, Score::Cp(45)));
+        assert_eq!(info.pv, vec!["e2e4", "e7e5"]);
+    }
+
+    #[test]
+    fn returns_none_for_non_info_line() {
+        assert!(parse_info("bestmove e2e4 ponder e7e5").is_none());
+        assert!(parse_info("readyok").is_none());
+    }
+
+    #[test]
+    fn missing_score_defaults_to_zero_cp() {
+        let info = parse_info("info depth 5 pv e2e4").expect("should parse");
+        assert!(matches!(info.score, Score::Cp(0)));
+    }
+}

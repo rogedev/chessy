@@ -125,3 +125,52 @@ pub fn save_pgn(games: &[Game], path: &Path) -> io::Result<()> {
     }
     fs::write(path, out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_single_game_with_moves() {
+        let pgn = "[Event \"Test\"]\n\n1. e4 e5 2. Nf3 Nc6 1/2-1/2\n";
+        let games = load_pgn_str(pgn);
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        assert_eq!(g.san, vec!["e4", "e5", "Nf3", "Nc6"]);
+        assert_eq!(g.headers.get("Event").map(String::as_str), Some("Test"));
+    }
+
+    #[test]
+    fn loads_multiple_games() {
+        let pgn = "[Event \"A\"]\n\n1. e4 e5 *\n\n[Event \"B\"]\n\n1. d4 d5 *\n";
+        let games = load_pgn_str(pgn);
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].san, vec!["e4", "e5"]);
+        assert_eq!(games[1].san, vec!["d4", "d5"]);
+    }
+
+    #[test]
+    fn respects_custom_fen_start_position() {
+        use shakmaty::{Color, Square};
+        let fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        let pgn = format!("[FEN \"{fen}\"]\n[SetUp \"1\"]\n\n1... c5 *\n");
+        let games = load_pgn_str(&pgn);
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        // Custom start: Black to move with a white pawn already on e4.
+        assert_eq!(g.positions[0].turn(), Color::Black);
+        assert!(g.positions[0].board().piece_at(Square::E4).is_some());
+        assert_eq!(g.san, vec!["c5"]);
+    }
+
+    #[test]
+    fn round_trips_through_to_pgn() {
+        let mut original = Game::new();
+        for m in ["e2e4", "e7e5", "g1f3", "b8c6"] {
+            original.make_uci_move(m).expect("legal");
+        }
+        let reloaded = load_pgn_str(&original.to_pgn());
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].san, original.san);
+    }
+}

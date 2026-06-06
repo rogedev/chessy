@@ -60,3 +60,33 @@ pub enum EngineOutput {
     BestMove(String),
     Ready,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_cp_formats_with_sign_and_two_decimals() {
+        assert_eq!(Score::Cp(123).display(), "+1.23");
+        assert_eq!(Score::Cp(-50).display(), "-0.50");
+        assert_eq!(Score::Cp(0).display(), "+0.00");
+    }
+
+    #[test]
+    fn display_mate_uses_m_notation() {
+        assert_eq!(Score::Mate(3).display(), "M3");
+        assert_eq!(Score::Mate(-2).display(), "-M2");
+    }
+
+    #[test]
+    fn as_cp_f32_returns_centipawns_for_cp() {
+        assert_eq!(Score::Cp(150).as_cp_f32(), 150.0);
+        assert_eq!(Score::Cp(-150).as_cp_f32(), -150.0);
+    }
+
+    #[test]
+    fn as_cp_f32_clamps_mate_to_large_magnitude() {
+        assert_eq!(Score::Mate(1).as_cp_f32(), 100_000.0);
+        assert_eq!(Score::Mate(-1).as_cp_f32(), -100_000.0);
+    }
+}

@@ -198,3 +198,157 @@ fn default_headers() -> HashMap<String, String> {
     h.insert("Result".to_string(), "*".to_string());
     h
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    /// Build a game by playing a sequence of UCI moves from the start position.
+    fn game_from_uci(moves: &[&str]) -> Game {
+        let mut g = Game::new();
+        for m in moves {
+            g.make_uci_move(m).expect("legal move");
+        }
+        g
+    }
+
+    #[test]
+    fn new_starts_at_standard_position() {
+        let g = Game::new();
+        assert_eq!(g.cursor, 0);
+        assert!(g.moves.is_empty());
+        assert!(g.san.is_empty());
+        assert!(g.at_end());
+        assert_eq!(g.current_fen(), START_FEN);
+    }
+
+    #[test]
+    fn from_fen_parses_valid_and_rejects_garbage() {
+        let g = Game::from_fen(START_FEN).expect("valid fen");
+        assert_eq!(g.current_fen(), START_FEN);
+        assert!(Game::from_fen("not a fen").is_err());
+    }
+
+    #[test]
+    fn make_uci_move_advances_and_records_san() {
+        let mut g = Game::new();
+        g.make_uci_move("e2e4").expect("legal");
+        assert_eq!(g.cursor, 1);
+        assert_eq!(g.moves.len(), 1);
+        assert_eq!(g.san, vec!["e4"]);
+        assert!(g.at_end());
+    }
+
+    #[test]
+    fn make_uci_move_rejects_illegal_and_leaves_state() {
+        let mut g = Game::new();
+        assert!(g.make_uci_move("e2e5").is_err());
+        assert_eq!(g.cursor, 0);
+        assert!(g.moves.is_empty());
+    }
+
+    #[test]
+    fn navigation_clamps_at_both_ends() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3"]);
+        assert_eq!(g.cursor, 3);
+        assert!(g.at_end());
+
+        g.go_back();
+        assert_eq!(g.cursor, 2);
+        assert!(!g.at_end());
+
+        g.go_to_start();
+        assert_eq!(g.cursor, 0);
+        g.go_back(); // already at start, no underflow
+        assert_eq!(g.cursor, 0);
+
+        g.go_to_end();
+        assert_eq!(g.cursor, 3);
+        g.go_forward(); // already at end, no overflow
+        assert_eq!(g.cursor, 3);
+
+        g.go_to(1);
+        assert_eq!(g.cursor, 1);
+        g.go_to(99); // clamps to number of moves
+        assert_eq!(g.cursor, 3);
+    }
+
+    #[test]
+    fn make_move_truncates_future_branch() {
+        let mut g = game_from_uci(&["e2e4", "e7e5"]);
+        g.go_back(); // cursor == 1, black to move after 1.e4
+        g.make_uci_move("c7c5").expect("legal alternative");
+        assert_eq!(g.cursor, 2);
+        assert_eq!(g.moves.len(), 2);
+        assert_eq!(g.positions.len(), 3);
+        assert_eq!(g.san, vec!["e4", "c5"]);
+    }
+
+    #[test]
+    fn uci_moves_to_cursor_respects_position() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3"]);
+        assert_eq!(g.uci_moves_to_cursor(), vec!["e2e4", "e7e5", "g1f3"]);
+        g.go_to(1);
+        assert_eq!(g.uci_moves_to_cursor(), vec!["e2e4"]);
+        g.go_to_start();
+        assert!(g.uci_moves_to_cursor().is_empty());
+    }
+
+    #[test]
+    fn detects_checkmate() {
+        // Fool's mate: 1. f3 e5 2. g4 Qh4#
+        let g = game_from_uci(&["f2f3", "e7e5", "g2g4", "d8h4"]);
+        assert!(g.is_game_over());
+        // shakmaty's Color renders lowercase.
+        assert_eq!(
+            g.outcome_string(),
+            Some("black wins by checkmate".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_stalemate() {
+        let g = Game::from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1").expect("valid fen");
+        assert!(g.is_game_over());
+        assert_eq!(g.outcome_string(), Some("Draw by stalemate".to_string()));
+    }
+
+    #[test]
+    fn detects_insufficient_material() {
+        let g = Game::from_fen("8/8/8/4k3/8/4K3/8/8 w - - 0 1").expect("valid fen");
+        assert!(g.is_game_over());
+        assert_eq!(
+            g.outcome_string(),
+            Some("Draw by insufficient material".to_string())
+        );
+    }
+
+    #[test]
+    fn ongoing_position_has_no_outcome() {
+        let g = Game::new();
+        assert!(!g.is_game_over());
+        assert!(g.outcome_string().is_none());
+    }
+
+    #[test]
+    fn to_pgn_formats_white_first_game() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3"]);
+        g.headers.insert("Result".to_string(), "1-0".to_string());
+        let pgn = g.to_pgn();
+        assert!(pgn.contains("[White \"?\"]"));
+        assert!(pgn.contains("1. e4 e5 2. Nf3"));
+        assert!(pgn.trim_end().ends_with("1-0"));
+    }
+
+    #[test]
+    fn to_pgn_prefixes_black_first_move() {
+        // Position after 1.e4 with Black to move.
+        let mut g = Game::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+            .expect("valid fen");
+        g.make_uci_move("c7c5").expect("legal");
+        let pgn = g.to_pgn();
+        assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+}
