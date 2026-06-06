@@ -42,9 +42,8 @@ pub struct ChessyApp {
 }
 
 impl ChessyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
-        configure_fonts(&cc.egui_ctx);
 
         let engine = UciClient::new(Path::new(&settings.engine_path)).ok();
 
@@ -119,7 +118,7 @@ impl ChessyApp {
 
     fn poll_engine(&mut self) {
         let Some(engine) = &self.engine else { return };
-        
+
         while let Some(msg) = engine.try_recv() {
             match msg {
                 EngineOutput::Info(info) => {
@@ -138,8 +137,6 @@ impl ChessyApp {
                                 score: Score::Cp(0),
                                 pv: vec![],
                                 multipv: (self.engine_lines.len() + 1) as u8,
-                                nodes: None,
-                                nps: None,
                             });
                         }
                         self.engine_lines.push(info);
@@ -245,23 +242,23 @@ impl ChessyApp {
                 self.selected = None;
                 self.drag_from = None;
             }
-            
+
             if i.key_pressed(Key::ArrowRight) {
                 self.game.go_forward();
                 self.selected = None;
                 self.drag_from = None;
             }
-            
+
             if i.key_pressed(Key::Home) {
                 self.game.go_to_start();
                 self.selected = None;
             }
-            
+
             if i.key_pressed(Key::End) {
                 self.game.go_to_end();
                 self.selected = None;
             }
-            
+
             if i.key_pressed(Key::F) {
                 self.flipped = !self.flipped;
             }
@@ -499,7 +496,9 @@ impl ChessyApp {
     }
 
     fn show_promotion_dialog(&mut self, ctx: &Context) {
-        let Some((from, to)) = self.pending_promotion else { return };
+        let Some((from, to)) = self.pending_promotion else {
+            return;
+        };
         let turn_color = self.game.current_position().turn();
         let mut chosen_role: Option<Role> = None;
 
@@ -512,11 +511,11 @@ impl ChessyApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
-                        let symbol = piece_symbol(Piece { color: turn_color, role });
-                        if ui
-                            .button(RichText::new(symbol).size(40.0))
-                            .clicked()
-                        {
+                        let symbol = piece_symbol(Piece {
+                            color: turn_color,
+                            role,
+                        });
+                        if ui.button(RichText::new(symbol).size(40.0)).clicked() {
                             chosen_role = Some(role);
                         }
                     }
@@ -723,11 +722,4 @@ fn apply_theme(ctx: &Context, dark: bool) {
     } else {
         ctx.set_visuals(egui::Visuals::light());
     }
-}
-
-fn configure_fonts(ctx: &Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    // Ensure a font with good Unicode chess symbol support is loaded
-    // egui's default fonts include these symbols
-    ctx.set_fonts(fonts);
 }

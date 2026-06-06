@@ -45,8 +45,6 @@ pub struct EngineInfo {
     pub score: Score,
     pub pv: Vec<String>,
     pub multipv: u8,
-    pub nodes: Option<u64>,
-    pub nps: Option<u64>,
 }
 
 pub enum EngineCmd {
@@ -55,7 +53,6 @@ pub enum EngineCmd {
     GoMovetime { ms: u64, multipv: u8 },
     Stop,
     SetOption { name: String, value: String },
-    Quit,
 }
 
 pub enum EngineOutput {

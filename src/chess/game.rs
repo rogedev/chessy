@@ -47,10 +47,6 @@ impl Game {
         &self.positions[0]
     }
 
-    pub fn at_start(&self) -> bool {
-        self.cursor == 0
-    }
-
     pub fn at_end(&self) -> bool {
         self.cursor == self.moves.len()
     }

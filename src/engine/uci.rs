@@ -45,7 +45,10 @@ impl UciClient {
                         }
                     }
                     EngineCmd::Go { depth, multipv } => {
-                        format!("setoption name MultiPV value {}\ngo depth {}", multipv, depth)
+                        format!(
+                            "setoption name MultiPV value {}\ngo depth {}",
+                            multipv, depth
+                        )
                     }
                     EngineCmd::GoMovetime { ms, multipv } => {
                         format!(
@@ -56,11 +59,6 @@ impl UciClient {
                     EngineCmd::Stop => "stop".to_string(),
                     EngineCmd::SetOption { name, value } => {
                         format!("setoption name {} value {}", name, value)
-                    }
-                    EngineCmd::Quit => {
-                        let _ = writeln!(stdin, "quit");
-                        let _ = stdin.flush();
-                        return;
                     }
                 };
                 for l in line.lines() {
@@ -162,8 +160,6 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
     let mut score: Option<Score> = None;
     let mut pv: Vec<String> = vec![];
     let mut multipv = 1u8;
-    let mut nodes: Option<u64> = None;
-    let mut nps: Option<u64> = None;
 
     let mut i = 1;
     while i < tokens.len() {
@@ -179,11 +175,17 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
             "score" => {
                 match tokens.get(i + 1) {
                     Some(&"cp") => {
-                        score = tokens.get(i + 2).and_then(|s| s.parse().ok()).map(Score::Cp);
+                        score = tokens
+                            .get(i + 2)
+                            .and_then(|s| s.parse().ok())
+                            .map(Score::Cp);
                         i += 3;
                     }
                     Some(&"mate") => {
-                        score = tokens.get(i + 2).and_then(|s| s.parse().ok()).map(Score::Mate);
+                        score = tokens
+                            .get(i + 2)
+                            .and_then(|s| s.parse().ok())
+                            .map(Score::Mate);
                         i += 3;
                     }
                     _ => {
@@ -194,14 +196,6 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
                 if let Some(&"lowerbound") | Some(&"upperbound") = tokens.get(i) {
                     i += 1;
                 }
-            }
-            "nodes" => {
-                nodes = tokens.get(i + 1).and_then(|s| s.parse().ok());
-                i += 2;
-            }
-            "nps" => {
-                nps = tokens.get(i + 1).and_then(|s| s.parse().ok());
-                i += 2;
             }
             "pv" => {
                 i += 1;
@@ -221,7 +215,5 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
         score: score.unwrap_or(Score::Cp(0)),
         pv,
         multipv,
-        nodes,
-        nps,
     })
 }

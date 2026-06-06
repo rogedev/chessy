@@ -99,7 +99,11 @@ impl<'a> BoardWidget<'a> {
 
                 let is_light_sq = (rank_idx + file_idx) % 2 == 0;
                 let sq_color = if self.dark_theme {
-                    if is_light_sq { DARK_SQ_DARK } else { DARK_SQ_LIGHT }
+                    if is_light_sq {
+                        DARK_SQ_DARK
+                    } else {
+                        DARK_SQ_LIGHT
+                    }
                 } else if is_light_sq {
                     LIGHT_SQ_LIGHT
                 } else {
@@ -127,17 +131,11 @@ impl<'a> BoardWidget<'a> {
                         );
                     } else {
                         // Move hint: small dot
-                        painter.circle_filled(
-                            sq_rect.center(),
-                            sq_size * 0.15,
-                            HIGHLIGHT_LEGAL,
-                        );
+                        painter.circle_filled(sq_rect.center(), sq_size * 0.15, HIGHLIGHT_LEGAL);
                     }
                 }
 
-                // Draw piece (skip if being dragged)
-                let skip_sq = self.drag_from.map(|s| s == sq).unwrap_or(false);
-                if !skip_sq {
+                if *self.drag_from != Some(sq) {
                     if let Some(piece) = board.piece_at(sq) {
                         draw_piece(&painter, piece, sq_rect, sq_size);
                     }
@@ -156,8 +154,12 @@ impl<'a> BoardWidget<'a> {
             }
         }
 
-        // Input handling (only in interactive mode, at game end, and not awaiting promotion)
-        if self.interactive && self.game.at_end() && !self.game.is_game_over() && self.pending_promotion.is_none() {
+        let can_interact = self.interactive
+            && self.game.at_end()
+            && !self.game.is_game_over()
+            && self.pending_promotion.is_none();
+
+        if can_interact {
             // Update drag position
             if response.dragged() {
                 if let Some(ptr) = response.interact_pointer_pos() {
@@ -280,14 +282,17 @@ fn handle_click(
 }
 
 fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
-    game.current_position()
-        .legal_moves()
-        .iter()
-        .any(|m| {
-            m.from() == Some(from)
-                && m.to() == to
-                && matches!(m, Move::Normal { promotion: Some(_), .. })
-        })
+    game.current_position().legal_moves().iter().any(|m| {
+        m.from() == Some(from)
+            && m.to() == to
+            && matches!(
+                m,
+                Move::Normal {
+                    promotion: Some(_),
+                    ..
+                }
+            )
+    })
 }
 
 pub fn try_make_promotion_move(game: &mut Game, from: Square, to: Square, role: Role) -> bool {
@@ -297,23 +302,25 @@ pub fn try_make_promotion_move(game: &mut Game, from: Square, to: Square, role: 
             && m.to() == to
             && matches!(m, Move::Normal { promotion: Some(r), .. } if *r == role)
     });
-    m.map(|m| game.make_move(m.clone()).is_ok()).unwrap_or(false)
+    m.map(|m| game.make_move(m.clone()).is_ok())
+        .unwrap_or(false)
 }
 
 fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
-    let pos = game.current_position();
-    let legals = pos.legal_moves();
-
-    let m = legals
-        .iter()
-        .filter(|m| m.from() == Some(from) && m.to() == to)
-        .find(|m| !matches!(m, Move::Normal { promotion: Some(_), .. }));
-
-    if let Some(m) = m {
-        game.make_move(m.clone()).is_ok()
-    } else {
-        false
-    }
+    let legals = game.current_position().legal_moves();
+    let m = legals.iter().find(|m| {
+        m.from() == Some(from)
+            && m.to() == to
+            && !matches!(
+                m,
+                Move::Normal {
+                    promotion: Some(_),
+                    ..
+                }
+            )
+    });
+    m.map(|m| game.make_move(m.clone()).is_ok())
+        .unwrap_or(false)
 }
 
 pub fn piece_symbol(piece: Piece) -> &'static str {
@@ -339,7 +346,10 @@ fn draw_piece(painter: &Painter, piece: Piece, rect: Rect, sq_size: f32) {
     // Shadow / outline for visibility on both square colors
     let (fg, shadow) = match piece.color {
         PieceColor::White => (Color32::WHITE, Color32::from_rgb(40, 40, 40)),
-        PieceColor::Black => (Color32::from_rgb(20, 20, 20), Color32::from_rgb(200, 200, 200)),
+        PieceColor::Black => (
+            Color32::from_rgb(20, 20, 20),
+            Color32::from_rgb(200, 200, 200),
+        ),
     };
 
     let font = FontId::proportional(sq_size * 0.78);
@@ -362,13 +372,7 @@ fn draw_piece(painter: &Painter, piece: Piece, rect: Rect, sq_size: f32) {
     painter.text(rect.center(), Align2::CENTER_CENTER, symbol, font, fg);
 }
 
-fn draw_labels(
-    painter: &Painter,
-    board_rect: Rect,
-    sq_size: f32,
-    flipped: bool,
-    dark_theme: bool,
-) {
+fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool, dark_theme: bool) {
     let label_color = if dark_theme {
         Color32::from_rgb(180, 180, 180)
     } else {
