@@ -78,8 +78,8 @@ impl Game {
     /// Make a move from the current cursor position, truncating any future moves.
     pub fn make_move(&mut self, m: Move) -> anyhow::Result<()> {
         let pos = self.current_position().clone();
-        let san_str = SanPlus::from_move(pos.clone(), m.clone()).to_string();
-        let new_pos = pos.play(m.clone())?;
+        let san_str = SanPlus::from_move(pos.clone(), m).to_string();
+        let new_pos = pos.play(m)?;
 
         // Truncate future branch if navigating in the middle
         self.moves.truncate(self.cursor);
@@ -163,7 +163,7 @@ impl Game {
                 } else {
                     out.push_str(&format!("{}. ", move_num));
                 }
-            } else if i % 2 == 0 {
+            } else if i.is_multiple_of(2) {
                 out.push_str(&format!("{}. ", move_num));
             }
             out.push_str(san_str);

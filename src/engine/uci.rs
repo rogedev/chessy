@@ -83,10 +83,10 @@ impl UciClient {
                     if !best.is_empty() && best != "(none)" {
                         let _ = tx_out_clone.send(EngineOutput::BestMove(best));
                     }
-                } else if line.starts_with("info ") {
-                    if let Some(info) = parse_info(&line) {
-                        let _ = tx_out_clone.send(EngineOutput::Info(info));
-                    }
+                } else if line.starts_with("info ")
+                    && let Some(info) = parse_info(&line)
+                {
+                    let _ = tx_out_clone.send(EngineOutput::Info(info));
                 }
             }
         });

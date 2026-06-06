@@ -124,7 +124,7 @@ fn pv_to_san(position: &Chess, pv: &[String]) -> String {
             break;
         };
         let Ok(m) = uci.to_move(&pos) else { break };
-        let san = shakmaty::san::SanPlus::from_move(pos.clone(), m.clone());
+        let san = shakmaty::san::SanPlus::from_move(pos.clone(), m);
 
         if first || pos.turn() == shakmaty::Color::White {
             if pos.turn() == shakmaty::Color::White {

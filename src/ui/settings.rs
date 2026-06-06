@@ -27,21 +27,20 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        if let Some(path) = config_path() {
-            if let Ok(data) = std::fs::read_to_string(&path) {
-                if let Ok(s) = serde_json::from_str(&data) {
-                    return s;
-                }
-            }
+        if let Some(path) = config_path()
+            && let Ok(data) = std::fs::read_to_string(&path)
+            && let Ok(s) = serde_json::from_str(&data)
+        {
+            return s;
         }
         Self::default()
     }
 
     pub fn save(&self) {
-        if let Some(path) = config_path() {
-            if let Ok(json) = serde_json::to_string_pretty(self) {
-                let _ = std::fs::write(path, json);
-            }
+        if let Some(path) = config_path()
+            && let Ok(json) = serde_json::to_string_pretty(self)
+        {
+            let _ = std::fs::write(path, json);
         }
     }
 }

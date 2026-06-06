@@ -15,15 +15,21 @@ const HIGHLIGHT_SELECTED: Color32 = Color32::from_rgba_premultiplied(20, 85, 30,
 const HIGHLIGHT_LEGAL: Color32 = Color32::from_rgba_premultiplied(20, 85, 30, 80);
 const HIGHLIGHT_CHECK: Color32 = Color32::from_rgba_premultiplied(220, 0, 0, 120);
 
+/// Mutable board interaction state shared between the app and the widget.
+#[derive(Default)]
+pub struct BoardInteraction {
+    pub selected: Option<Square>,
+    pub drag_from: Option<Square>,
+    pub drag_pos: Option<Pos2>,
+    pub pending_promotion: Option<(Square, Square)>,
+}
+
 pub struct BoardWidget<'a> {
     game: &'a mut Game,
     flipped: bool,
     dark_theme: bool,
-    selected: &'a mut Option<Square>,
-    drag_from: &'a mut Option<Square>,
-    drag_pos: &'a mut Option<Pos2>,
     interactive: bool,
-    pending_promotion: &'a mut Option<(Square, Square)>,
+    interaction: &'a mut BoardInteraction,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -31,21 +37,15 @@ impl<'a> BoardWidget<'a> {
         game: &'a mut Game,
         flipped: bool,
         dark_theme: bool,
-        selected: &'a mut Option<Square>,
-        drag_from: &'a mut Option<Square>,
-        drag_pos: &'a mut Option<Pos2>,
         interactive: bool,
-        pending_promotion: &'a mut Option<(Square, Square)>,
+        interaction: &'a mut BoardInteraction,
     ) -> Self {
         Self {
             game,
             flipped,
             dark_theme,
-            selected,
-            drag_from,
-            drag_pos,
             interactive,
-            pending_promotion,
+            interaction,
         }
     }
 
@@ -62,7 +62,7 @@ impl<'a> BoardWidget<'a> {
         let board = pos.board();
 
         // Legal moves from selected square
-        let legal_dests: Vec<Square> = if let Some(from) = *self.selected {
+        let legal_dests: Vec<Square> = if let Some(from) = self.interaction.selected {
             pos.legal_moves()
                 .iter()
                 .filter(|m| m.from() == Some(from))
@@ -118,7 +118,7 @@ impl<'a> BoardWidget<'a> {
                 if check_sq == Some(sq) {
                     painter.rect_filled(sq_rect, 0.0, HIGHLIGHT_CHECK);
                 }
-                if *self.selected == Some(sq) {
+                if self.interaction.selected == Some(sq) {
                     painter.rect_filled(sq_rect, 0.0, HIGHLIGHT_SELECTED);
                 }
                 if legal_dests.contains(&sq) {
@@ -135,10 +135,10 @@ impl<'a> BoardWidget<'a> {
                     }
                 }
 
-                if *self.drag_from != Some(sq) {
-                    if let Some(piece) = board.piece_at(sq) {
-                        draw_piece(&painter, piece, sq_rect, sq_size);
-                    }
+                if self.interaction.drag_from != Some(sq)
+                    && let Some(piece) = board.piece_at(sq)
+                {
+                    draw_piece(&painter, piece, sq_rect, sq_size);
                 }
             }
         }
@@ -147,58 +147,62 @@ impl<'a> BoardWidget<'a> {
         draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
 
         // Draw dragged piece at cursor
-        if let (Some(from_sq), Some(cursor_pos)) = (*self.drag_from, *self.drag_pos) {
-            if let Some(piece) = board.piece_at(from_sq) {
-                let drag_rect = Rect::from_center_size(cursor_pos, Vec2::splat(sq_size));
-                draw_piece(&painter, piece, drag_rect, sq_size);
-            }
+        if let (Some(from_sq), Some(cursor_pos)) =
+            (self.interaction.drag_from, self.interaction.drag_pos)
+            && let Some(piece) = board.piece_at(from_sq)
+        {
+            let drag_rect = Rect::from_center_size(cursor_pos, Vec2::splat(sq_size));
+            draw_piece(&painter, piece, drag_rect, sq_size);
         }
 
         let can_interact = self.interactive
             && self.game.at_end()
             && !self.game.is_game_over()
-            && self.pending_promotion.is_none();
+            && self.interaction.pending_promotion.is_none();
 
         if can_interact {
             // Update drag position
-            if response.dragged() {
-                if let Some(ptr) = response.interact_pointer_pos() {
-                    *self.drag_pos = Some(ptr);
-                    if self.drag_from.is_none() {
-                        // Start drag if we're on a piece of the right color
-                        if let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped) {
-                            if let Some(piece) = board.piece_at(sq) {
-                                if piece.color == pos.turn() {
-                                    *self.drag_from = Some(sq);
-                                    *self.selected = Some(sq);
-                                }
-                            }
-                        }
-                    }
+            if response.dragged()
+                && let Some(ptr) = response.interact_pointer_pos()
+            {
+                self.interaction.drag_pos = Some(ptr);
+                // Start drag if we're on a piece of the right color
+                if self.interaction.drag_from.is_none()
+                    && let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped)
+                    && let Some(piece) = board.piece_at(sq)
+                    && piece.color == pos.turn()
+                {
+                    self.interaction.drag_from = Some(sq);
+                    self.interaction.selected = Some(sq);
                 }
             }
 
             if response.drag_stopped() {
-                if let (Some(from), Some(ptr)) = (*self.drag_from, *self.drag_pos) {
-                    if let Some(to) = pos_to_sq(ptr, rect, sq_size, self.flipped) {
-                        if is_promotion_move(self.game, from, to) {
-                            *self.pending_promotion = Some((from, to));
-                        } else {
-                            try_make_move(self.game, from, to);
-                        }
+                if let (Some(from), Some(ptr)) =
+                    (self.interaction.drag_from, self.interaction.drag_pos)
+                    && let Some(to) = pos_to_sq(ptr, rect, sq_size, self.flipped)
+                {
+                    if is_promotion_move(self.game, from, to) {
+                        self.interaction.pending_promotion = Some((from, to));
+                    } else {
+                        try_make_move(self.game, from, to);
                     }
                 }
-                *self.drag_from = None;
-                *self.drag_pos = None;
-                *self.selected = None;
+                self.interaction.drag_from = None;
+                self.interaction.drag_pos = None;
+                self.interaction.selected = None;
             }
 
-            if response.clicked() {
-                if let Some(ptr) = response.interact_pointer_pos() {
-                    if let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped) {
-                        handle_click(self.game, self.selected, sq, self.pending_promotion);
-                    }
-                }
+            if response.clicked()
+                && let Some(ptr) = response.interact_pointer_pos()
+                && let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped)
+            {
+                handle_click(
+                    self.game,
+                    &mut self.interaction.selected,
+                    sq,
+                    &mut self.interaction.pending_promotion,
+                );
             }
         }
 
@@ -273,10 +277,10 @@ fn handle_click(
         }
     } else {
         let pos = game.current_position();
-        if let Some(piece) = pos.board().piece_at(sq) {
-            if piece.color == pos.turn() {
-                *selected = Some(sq);
-            }
+        if let Some(piece) = pos.board().piece_at(sq)
+            && piece.color == pos.turn()
+        {
+            *selected = Some(sq);
         }
     }
 }
@@ -302,8 +306,7 @@ pub fn try_make_promotion_move(game: &mut Game, from: Square, to: Square, role: 
             && m.to() == to
             && matches!(m, Move::Normal { promotion: Some(r), .. } if *r == role)
     });
-    m.map(|m| game.make_move(m.clone()).is_ok())
-        .unwrap_or(false)
+    m.map(|m| game.make_move(*m).is_ok()).unwrap_or(false)
 }
 
 fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
@@ -319,8 +322,7 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
                 }
             )
     });
-    m.map(|m| game.make_move(m.clone()).is_ok())
-        .unwrap_or(false)
+    m.map(|m| game.make_move(*m).is_ok()).unwrap_or(false)
 }
 
 pub fn piece_symbol(piece: Piece) -> &'static str {

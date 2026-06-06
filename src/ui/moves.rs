@@ -56,7 +56,7 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
                         i += 1;
                     } else {
                         // White move
-                        if i % 2 == 0 {
+                        if i.is_multiple_of(2) {
                             ui.label(
                                 RichText::new(format!("{}.", move_num))
                                     .color(Color32::GRAY)

@@ -9,7 +9,7 @@ use crate::{
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
-        board::{BoardWidget, piece_symbol, try_make_promotion_move},
+        board::{BoardInteraction, BoardWidget, piece_symbol, try_make_promotion_move},
         moves::show_moves_panel,
     },
 };
@@ -31,14 +31,11 @@ pub struct ChessyApp {
     settings: Settings,
     show_settings: bool,
     flipped: bool,
-    selected: Option<shakmaty::Square>,
-    drag_from: Option<shakmaty::Square>,
-    drag_pos: Option<egui::Pos2>,
+    interaction: BoardInteraction,
     // Tracks which position the engine last analyzed to avoid redundant sends
     last_analyzed_fen: String,
     waiting_for_bestmove: bool,
     show_about: bool,
-    pending_promotion: Option<(shakmaty::Square, shakmaty::Square)>,
 }
 
 impl ChessyApp {
@@ -58,13 +55,10 @@ impl ChessyApp {
             settings,
             show_settings: false,
             flipped: false,
-            selected: None,
-            drag_from: None,
-            drag_pos: None,
+            interaction: BoardInteraction::default(),
             last_analyzed_fen: String::new(),
             waiting_for_bestmove: false,
             show_about: false,
-            pending_promotion: None,
         };
         app.start_analysis();
         app
@@ -118,37 +112,18 @@ impl ChessyApp {
 
     fn poll_engine(&mut self) {
         let Some(engine) = &self.engine else { return };
+        // Drain all pending output first so the engine borrow ends before we
+        // mutate `self` while handling each message.
+        let messages: Vec<EngineOutput> = std::iter::from_fn(|| engine.try_recv()).collect();
 
-        while let Some(msg) = engine.try_recv() {
+        for msg in messages {
             match msg {
-                EngineOutput::Info(info) => {
-                    // Update eval score from multipv 1
-                    if info.multipv == 1 {
-                        self.eval_score = Some(info.score.clone());
-                    }
-                    // Upsert line by multipv index
-                    let idx = info.multipv.saturating_sub(1) as usize;
-                    if idx < self.engine_lines.len() {
-                        self.engine_lines[idx] = info;
-                    } else {
-                        while self.engine_lines.len() < idx {
-                            self.engine_lines.push(EngineInfo {
-                                depth: 0,
-                                score: Score::Cp(0),
-                                pv: vec![],
-                                multipv: (self.engine_lines.len() + 1) as u8,
-                            });
-                        }
-                        self.engine_lines.push(info);
-                    }
-                }
+                EngineOutput::Info(info) => self.upsert_engine_line(info),
                 EngineOutput::BestMove(mv_str) => {
                     self.engine_running = false;
                     if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        if self.game.make_uci_move(&mv_str).is_ok() {
-                            // After engine moves, start analysis if in play+analyze mode
-                        }
+                        let _ = self.game.make_uci_move(&mv_str);
                     }
                 }
                 EngineOutput::Ready => {}
@@ -156,16 +131,31 @@ impl ChessyApp {
         }
     }
 
+    /// Store an engine line at its MultiPV slot, growing `engine_lines` with
+    /// placeholders if a higher-numbered line arrives before the lower ones.
+    fn upsert_engine_line(&mut self, info: EngineInfo) {
+        if info.multipv == 1 {
+            self.eval_score = Some(info.score.clone());
+        }
+
+        let idx = info.multipv.saturating_sub(1) as usize;
+        while self.engine_lines.len() <= idx {
+            let slot = self.engine_lines.len() as u8 + 1;
+            self.engine_lines.push(EngineInfo::placeholder(slot));
+        }
+        self.engine_lines[idx] = info;
+    }
+
     fn new_game(&mut self) {
         self.game = Game::new();
         self.engine_lines.clear();
         self.eval_score = None;
-        self.selected = None;
-        self.drag_from = None;
-        self.drag_pos = None;
+        self.interaction.selected = None;
+        self.interaction.drag_from = None;
+        self.interaction.drag_pos = None;
         self.waiting_for_bestmove = false;
         self.last_analyzed_fen = String::new();
-        self.pending_promotion = None;
+        self.interaction.pending_promotion = None;
 
         if self.mode == AppMode::Analyze {
             self.start_analysis();
@@ -177,21 +167,27 @@ impl ChessyApp {
         }
     }
 
+    /// Replace the current game and reset analysis state, optionally switching
+    /// to analyze mode.
+    fn load_game(&mut self, game: Game, switch_to_analyze: bool) {
+        self.game = game;
+        self.engine_lines.clear();
+        self.eval_score = None;
+        self.interaction.selected = None;
+        if switch_to_analyze {
+            self.mode = AppMode::Analyze;
+        }
+        self.start_analysis();
+    }
+
     fn open_pgn(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("PGN files", &["pgn"])
             .pick_file()
+            && let Ok(games) = pgn::load_pgn(&path)
+            && let Some(first) = games.into_iter().next()
         {
-            if let Ok(games) = pgn::load_pgn(&path) {
-                if let Some(first) = games.into_iter().next() {
-                    self.game = first;
-                    self.engine_lines.clear();
-                    self.eval_score = None;
-                    self.selected = None;
-                    self.mode = AppMode::Analyze;
-                    self.start_analysis();
-                }
-            }
+            self.load_game(first, true);
         }
     }
 
@@ -205,27 +201,20 @@ impl ChessyApp {
     }
 
     fn paste_fen(&mut self) {
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            if let Ok(text) = clipboard.get_text() {
-                let text = text.trim().to_string();
-                if let Ok(game) = Game::from_fen(&text) {
-                    self.game = game;
-                    self.engine_lines.clear();
-                    self.eval_score = None;
-                    self.selected = None;
-                    self.start_analysis();
-                } else if let Some(games) = {
-                    let games = pgn::load_pgn_str(&text);
-                    if games.is_empty() { None } else { Some(games) }
-                } {
-                    self.game = games.into_iter().next().unwrap();
-                    self.engine_lines.clear();
-                    self.eval_score = None;
-                    self.selected = None;
-                    self.mode = AppMode::Analyze;
-                    self.start_analysis();
-                }
-            }
+        let Ok(mut clipboard) = arboard::Clipboard::new() else {
+            return;
+        };
+        let Ok(text) = clipboard.get_text() else {
+            return;
+        };
+        let text = text.trim();
+
+        // Accept either a raw FEN or a full PGN; the PGN path also switches to
+        // analyze mode.
+        if let Ok(game) = Game::from_fen(text) {
+            self.load_game(game, false);
+        } else if let Some(game) = pgn::load_pgn_str(text).into_iter().next() {
+            self.load_game(game, true);
         }
     }
 
@@ -239,24 +228,24 @@ impl ChessyApp {
         ctx.input(|i| {
             if i.key_pressed(Key::ArrowLeft) {
                 self.game.go_back();
-                self.selected = None;
-                self.drag_from = None;
+                self.interaction.selected = None;
+                self.interaction.drag_from = None;
             }
 
             if i.key_pressed(Key::ArrowRight) {
                 self.game.go_forward();
-                self.selected = None;
-                self.drag_from = None;
+                self.interaction.selected = None;
+                self.interaction.drag_from = None;
             }
 
             if i.key_pressed(Key::Home) {
                 self.game.go_to_start();
-                self.selected = None;
+                self.interaction.selected = None;
             }
 
             if i.key_pressed(Key::End) {
                 self.game.go_to_end();
-                self.selected = None;
+                self.interaction.selected = None;
             }
 
             if i.key_pressed(Key::F) {
@@ -413,10 +402,10 @@ impl ChessyApp {
                 ui.horizontal(|ui| {
                     ui.label("Engine path:");
                     ui.text_edit_singleline(&mut engine_path);
-                    if ui.button("Browse…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            engine_path = path.to_string_lossy().to_string();
-                        }
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
+                    {
+                        engine_path = path.to_string_lossy().to_string();
                     }
                 });
 
@@ -496,7 +485,7 @@ impl ChessyApp {
     }
 
     fn show_promotion_dialog(&mut self, ctx: &Context) {
-        let Some((from, to)) = self.pending_promotion else {
+        let Some((from, to)) = self.interaction.pending_promotion else {
             return;
         };
         let turn_color = self.game.current_position().turn();
@@ -524,7 +513,7 @@ impl ChessyApp {
 
         if let Some(role) = chosen_role {
             try_make_promotion_move(&mut self.game, from, to, role);
-            self.pending_promotion = None;
+            self.interaction.pending_promotion = None;
         }
     }
 }
@@ -569,7 +558,7 @@ impl eframe::App for ChessyApp {
         if self.show_about {
             self.show_about_window(&ctx);
         }
-        if self.pending_promotion.is_some() {
+        if self.interaction.pending_promotion.is_some() {
             self.show_promotion_dialog(&ctx);
         }
 
@@ -637,19 +626,19 @@ impl eframe::App for ChessyApp {
                 ui.horizontal(|ui| {
                     if ui.button("|◀").clicked() {
                         self.game.go_to_start();
-                        self.selected = None;
+                        self.interaction.selected = None;
                     }
                     if ui.button("◀").clicked() {
                         self.game.go_back();
-                        self.selected = None;
+                        self.interaction.selected = None;
                     }
                     if ui.button("▶").clicked() {
                         self.game.go_forward();
-                        self.selected = None;
+                        self.interaction.selected = None;
                     }
                     if ui.button("▶|").clicked() {
                         self.game.go_to_end();
-                        self.selected = None;
+                        self.interaction.selected = None;
                     }
                     if ui.button("⟳").on_hover_text("Flip board").clicked() {
                         self.flipped = !self.flipped;
@@ -686,31 +675,18 @@ impl eframe::App for ChessyApp {
                     AppMode::Play => !self.waiting_for_bestmove,
                 };
 
-                let mut selected = self.selected;
-                let mut drag_from = self.drag_from;
-                let mut drag_pos = self.drag_pos;
-                let mut pending_promotion = self.pending_promotion;
-
                 BoardWidget::new(
                     &mut self.game,
                     self.flipped,
                     self.settings.dark_theme,
-                    &mut selected,
-                    &mut drag_from,
-                    &mut drag_pos,
                     is_interactive,
-                    &mut pending_promotion,
+                    &mut self.interaction,
                 )
                 .show(ui);
-
-                self.selected = selected;
-                self.drag_from = drag_from;
-                self.drag_pos = drag_pos;
-                self.pending_promotion = pending_promotion;
             });
 
         // Request continuous repaint while engine is running
-        if self.engine_running || self.drag_from.is_some() {
+        if self.engine_running || self.interaction.drag_from.is_some() {
             ctx.request_repaint();
         }
     }

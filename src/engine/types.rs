@@ -47,6 +47,19 @@ pub struct EngineInfo {
     pub multipv: u8,
 }
 
+impl EngineInfo {
+    /// An empty line for the given MultiPV slot, used to pad gaps before a
+    /// higher-numbered line arrives from the engine.
+    pub fn placeholder(multipv: u8) -> Self {
+        Self {
+            depth: 0,
+            score: Score::Cp(0),
+            pv: vec![],
+            multipv,
+        }
+    }
+}
+
 pub enum EngineCmd {
     SetPosition { fen: String, moves: Vec<String> },
     Go { depth: u8, multipv: u8 },

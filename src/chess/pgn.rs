@@ -51,12 +51,11 @@ impl Visitor for GameLoader {
         let name_str = String::from_utf8_lossy(name).into_owned();
         let value_str = value.decode_utf8_lossy().into_owned();
 
-        if name == b"FEN" {
-            if let Ok(fen) = Fen::from_ascii(value.as_bytes()) {
-                if let Ok(pos) = fen.into_position(CastlingMode::Standard) {
-                    tags.1 = Some(pos);
-                }
-            }
+        if name == b"FEN"
+            && let Ok(fen) = Fen::from_ascii(value.as_bytes())
+            && let Ok(pos) = fen.into_position(CastlingMode::Standard)
+        {
+            tags.1 = Some(pos);
         }
         tags.0.insert(name_str, value_str);
         ControlFlow::Continue(())
@@ -76,13 +75,13 @@ impl Visitor for GameLoader {
     }
 
     fn san(&mut self, state: &mut Self::Movetext, san_plus: SanPlus) -> ControlFlow<Self::Output> {
-        if let Ok(m) = san_plus.san.to_move(&state.position) {
-            if let Ok(new_pos) = state.position.clone().play(m.clone()) {
-                state.san.push(san_plus.to_string());
-                state.moves.push(m);
-                state.positions.push(new_pos.clone());
-                state.position = new_pos;
-            }
+        if let Ok(m) = san_plus.san.to_move(&state.position)
+            && let Ok(new_pos) = state.position.clone().play(m)
+        {
+            state.san.push(san_plus.to_string());
+            state.moves.push(m);
+            state.positions.push(new_pos.clone());
+            state.position = new_pos;
         }
         ControlFlow::Continue(())
     }
