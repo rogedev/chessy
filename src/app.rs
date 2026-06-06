@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use egui::{Color32, Context, FontId, Key, RichText, Ui};
-use shakmaty::{Color as PieceColor, Position};
+use shakmaty::{Color as PieceColor, Piece, Position, Role};
 
 use crate::{
     chess::{Game, pgn},
@@ -9,7 +9,7 @@ use crate::{
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
-        board::BoardWidget,
+        board::{BoardWidget, piece_symbol, try_make_promotion_move},
         moves::show_moves_panel,
     },
 };
@@ -38,6 +38,7 @@ pub struct ChessyApp {
     last_analyzed_fen: String,
     waiting_for_bestmove: bool,
     show_about: bool,
+    pending_promotion: Option<(shakmaty::Square, shakmaty::Square)>,
 }
 
 impl ChessyApp {
@@ -64,6 +65,7 @@ impl ChessyApp {
             last_analyzed_fen: String::new(),
             waiting_for_bestmove: false,
             show_about: false,
+            pending_promotion: None,
         };
         app.start_analysis();
         app
@@ -166,6 +168,7 @@ impl ChessyApp {
         self.drag_pos = None;
         self.waiting_for_bestmove = false;
         self.last_analyzed_fen = String::new();
+        self.pending_promotion = None;
 
         if self.mode == AppMode::Analyze {
             self.start_analysis();
@@ -494,6 +497,37 @@ impl ChessyApp {
             });
         self.show_about = open;
     }
+
+    fn show_promotion_dialog(&mut self, ctx: &Context) {
+        let Some((from, to)) = self.pending_promotion else { return };
+        let turn_color = self.game.current_position().turn();
+        let mut chosen_role: Option<Role> = None;
+
+        egui::Window::new("Promote Pawn")
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Choose promotion piece:");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
+                        let symbol = piece_symbol(Piece { color: turn_color, role });
+                        if ui
+                            .button(RichText::new(symbol).size(40.0))
+                            .clicked()
+                        {
+                            chosen_role = Some(role);
+                        }
+                    }
+                });
+            });
+
+        if let Some(role) = chosen_role {
+            try_make_promotion_move(&mut self.game, from, to, role);
+            self.pending_promotion = None;
+        }
+    }
 }
 
 impl eframe::App for ChessyApp {
@@ -529,12 +563,15 @@ impl eframe::App for ChessyApp {
             Color32::from_rgb(240, 240, 240)
         };
 
-        // Settings and about windows
+        // Settings, about, and promotion dialog windows
         if self.show_settings {
             self.show_settings_window(&ctx);
         }
         if self.show_about {
             self.show_about_window(&ctx);
+        }
+        if self.pending_promotion.is_some() {
+            self.show_promotion_dialog(&ctx);
         }
 
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
@@ -653,6 +690,7 @@ impl eframe::App for ChessyApp {
                 let mut selected = self.selected;
                 let mut drag_from = self.drag_from;
                 let mut drag_pos = self.drag_pos;
+                let mut pending_promotion = self.pending_promotion;
 
                 BoardWidget::new(
                     &mut self.game,
@@ -662,12 +700,14 @@ impl eframe::App for ChessyApp {
                     &mut drag_from,
                     &mut drag_pos,
                     is_interactive,
+                    &mut pending_promotion,
                 )
                 .show(ui);
 
                 self.selected = selected;
                 self.drag_from = drag_from;
                 self.drag_pos = drag_pos;
+                self.pending_promotion = pending_promotion;
             });
 
         // Request continuous repaint while engine is running

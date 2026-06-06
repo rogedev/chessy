@@ -23,6 +23,7 @@ pub struct BoardWidget<'a> {
     drag_from: &'a mut Option<Square>,
     drag_pos: &'a mut Option<Pos2>,
     interactive: bool,
+    pending_promotion: &'a mut Option<(Square, Square)>,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -34,6 +35,7 @@ impl<'a> BoardWidget<'a> {
         drag_from: &'a mut Option<Square>,
         drag_pos: &'a mut Option<Pos2>,
         interactive: bool,
+        pending_promotion: &'a mut Option<(Square, Square)>,
     ) -> Self {
         Self {
             game,
@@ -43,6 +45,7 @@ impl<'a> BoardWidget<'a> {
             drag_from,
             drag_pos,
             interactive,
+            pending_promotion,
         }
     }
 
@@ -153,8 +156,8 @@ impl<'a> BoardWidget<'a> {
             }
         }
 
-        // Input handling (only in interactive mode and when at game end)
-        if self.interactive && self.game.at_end() && !self.game.is_game_over() {
+        // Input handling (only in interactive mode, at game end, and not awaiting promotion)
+        if self.interactive && self.game.at_end() && !self.game.is_game_over() && self.pending_promotion.is_none() {
             // Update drag position
             if response.dragged() {
                 if let Some(ptr) = response.interact_pointer_pos() {
@@ -176,7 +179,11 @@ impl<'a> BoardWidget<'a> {
             if response.drag_stopped() {
                 if let (Some(from), Some(ptr)) = (*self.drag_from, *self.drag_pos) {
                     if let Some(to) = pos_to_sq(ptr, rect, sq_size, self.flipped) {
-                        try_make_move(self.game, from, to);
+                        if is_promotion_move(self.game, from, to) {
+                            *self.pending_promotion = Some((from, to));
+                        } else {
+                            try_make_move(self.game, from, to);
+                        }
                     }
                 }
                 *self.drag_from = None;
@@ -187,7 +194,7 @@ impl<'a> BoardWidget<'a> {
             if response.clicked() {
                 if let Some(ptr) = response.interact_pointer_pos() {
                     if let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped) {
-                        handle_click(self.game, self.selected, sq);
+                        handle_click(self.game, self.selected, sq, self.pending_promotion);
                     }
                 }
             }
@@ -231,27 +238,35 @@ fn pos_to_sq(ptr: Pos2, board_rect: Rect, sq_size: f32, flipped: bool) -> Option
     ))
 }
 
-fn handle_click(game: &mut Game, selected: &mut Option<Square>, sq: Square) {
+fn handle_click(
+    game: &mut Game,
+    selected: &mut Option<Square>,
+    sq: Square,
+    pending_promotion: &mut Option<(Square, Square)>,
+) {
     if let Some(from) = *selected {
         if from == sq {
             *selected = None;
             return;
         }
-        // Try to make move from -> sq
-        let moved = try_make_move(game, from, sq);
-        if moved {
+        if is_promotion_move(game, from, sq) {
+            *pending_promotion = Some((from, sq));
             *selected = None;
         } else {
-            // Maybe clicking another own piece
-            let pos = game.current_position();
-            if let Some(piece) = pos.board().piece_at(sq) {
-                if piece.color == pos.turn() {
-                    *selected = Some(sq);
+            let moved = try_make_move(game, from, sq);
+            if moved {
+                *selected = None;
+            } else {
+                let pos = game.current_position();
+                if let Some(piece) = pos.board().piece_at(sq) {
+                    if piece.color == pos.turn() {
+                        *selected = Some(sq);
+                    } else {
+                        *selected = None;
+                    }
                 } else {
                     *selected = None;
                 }
-            } else {
-                *selected = None;
             }
         }
     } else {
@@ -264,26 +279,57 @@ fn handle_click(game: &mut Game, selected: &mut Option<Square>, sq: Square) {
     }
 }
 
+fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
+    game.current_position()
+        .legal_moves()
+        .iter()
+        .any(|m| {
+            m.from() == Some(from)
+                && m.to() == to
+                && matches!(m, Move::Normal { promotion: Some(_), .. })
+        })
+}
+
+pub fn try_make_promotion_move(game: &mut Game, from: Square, to: Square, role: Role) -> bool {
+    let legals = game.current_position().legal_moves();
+    let m = legals.iter().find(|m| {
+        m.from() == Some(from)
+            && m.to() == to
+            && matches!(m, Move::Normal { promotion: Some(r), .. } if *r == role)
+    });
+    m.map(|m| game.make_move(m.clone()).is_ok()).unwrap_or(false)
+}
+
 fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
     let pos = game.current_position();
     let legals = pos.legal_moves();
 
-    // Find matching legal move (prefer queen promotion if applicable)
     let m = legals
         .iter()
         .filter(|m| m.from() == Some(from) && m.to() == to)
-        .max_by_key(|m| {
-            if let Move::Normal { promotion: Some(role), .. } = m {
-                *role as u8
-            } else {
-                0
-            }
-        });
+        .find(|m| !matches!(m, Move::Normal { promotion: Some(_), .. }));
 
     if let Some(m) = m {
         game.make_move(m.clone()).is_ok()
     } else {
         false
+    }
+}
+
+pub fn piece_symbol(piece: Piece) -> &'static str {
+    match (piece.color, piece.role) {
+        (PieceColor::White, Role::King) => "♔",
+        (PieceColor::White, Role::Queen) => "♕",
+        (PieceColor::White, Role::Rook) => "♖",
+        (PieceColor::White, Role::Bishop) => "♗",
+        (PieceColor::White, Role::Knight) => "♘",
+        (PieceColor::White, Role::Pawn) => "♙",
+        (PieceColor::Black, Role::King) => "♚",
+        (PieceColor::Black, Role::Queen) => "♛",
+        (PieceColor::Black, Role::Rook) => "♜",
+        (PieceColor::Black, Role::Bishop) => "♝",
+        (PieceColor::Black, Role::Knight) => "♞",
+        (PieceColor::Black, Role::Pawn) => "♟",
     }
 }
 
@@ -355,22 +401,5 @@ fn draw_labels(
             font.clone(),
             label_color,
         );
-    }
-}
-
-fn piece_symbol(piece: Piece) -> &'static str {
-    match (piece.color, piece.role) {
-        (PieceColor::White, Role::King) => "♔",
-        (PieceColor::White, Role::Queen) => "♕",
-        (PieceColor::White, Role::Rook) => "♖",
-        (PieceColor::White, Role::Bishop) => "♗",
-        (PieceColor::White, Role::Knight) => "♘",
-        (PieceColor::White, Role::Pawn) => "♙",
-        (PieceColor::Black, Role::King) => "♚",
-        (PieceColor::Black, Role::Queen) => "♛",
-        (PieceColor::Black, Role::Rook) => "♜",
-        (PieceColor::Black, Role::Bishop) => "♝",
-        (PieceColor::Black, Role::Knight) => "♞",
-        (PieceColor::Black, Role::Pawn) => "♟",
     }
 }
