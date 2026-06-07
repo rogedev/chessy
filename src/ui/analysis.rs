@@ -85,30 +85,31 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
 
     for info in lines {
         ui.horizontal(|ui| {
-            // Score
             ui.label(
                 RichText::new(info.score.display())
                     .font(FontId::monospace(12.0))
                     .color(score_color)
                     .strong(),
             );
-
-            // Depth
             ui.label(
                 RichText::new(format!("d{}", info.depth))
                     .font(FontId::proportional(11.0))
                     .color(depth_color),
             );
+        });
 
-            // PV in SAN notation
-            let pv_san = pv_to_san(position, &info.pv);
-            ui.label(
+        let pv_san = pv_to_san(position, &info.pv);
+
+        ui.add(
+            egui::Label::new(
                 RichText::new(pv_san)
                     .font(FontId::proportional(12.0))
                     .color(text_color),
-            );
-        });
-        ui.add_space(1.0);
+            )
+            .wrap(),
+        );
+
+        ui.add_space(2.0);
     }
 }
 

@@ -573,6 +573,7 @@ impl eframe::App for ChessyApp {
         egui::Panel::right("right_panel")
             .default_size(260.0)
             .min_size(200.0)
+            .resizable(false)
             .show_inside(ui, |ui| {
                 let panel_bg = if self.settings.dark_theme {
                     Color32::from_rgb(38, 38, 38)
@@ -673,20 +674,26 @@ impl eframe::App for ChessyApp {
                     });
                 }
 
-                // Chess board fills available space
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
                     AppMode::Play => !self.waiting_for_bestmove,
                 };
 
-                BoardWidget::new(
-                    &mut self.game,
-                    self.flipped,
-                    self.settings.dark_theme,
-                    is_interactive,
-                    &mut self.interaction,
-                )
-                .show(ui);
+                let available = ui.available_rect_before_wrap();
+                let board_size = available.width().min(available.height());
+                let board_rect =
+                    egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
+
+                ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
+                    BoardWidget::new(
+                        &mut self.game,
+                        self.flipped,
+                        self.settings.dark_theme,
+                        is_interactive,
+                        &mut self.interaction,
+                    )
+                    .show(ui);
+                });
             });
 
         // Request continuous repaint while engine is running
