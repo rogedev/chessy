@@ -31,7 +31,8 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
-            libssl-dev
+            libssl-dev \
+            libasound2-dev
 
       - name: Check formatting
         run: cargo fmt --all --check
