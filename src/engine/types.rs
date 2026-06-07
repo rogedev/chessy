@@ -18,6 +18,13 @@ impl Score {
         }
     }
 
+    pub fn negated(&self) -> Score {
+        match self {
+            Score::Cp(cp) => Score::Cp(-cp),
+            Score::Mate(n) => Score::Mate(-n),
+        }
+    }
+
     pub fn display(&self) -> String {
         match self {
             Score::Cp(cp) => {
@@ -89,6 +96,14 @@ mod tests {
     fn display_mate_uses_m_notation() {
         assert_eq!(Score::Mate(3).display(), "M3");
         assert_eq!(Score::Mate(-2).display(), "-M2");
+    }
+
+    #[test]
+    fn negated_flips_sign_for_cp_and_mate() {
+        assert!(matches!(Score::Cp(150).negated(), Score::Cp(-150)));
+        assert!(matches!(Score::Cp(-50).negated(), Score::Cp(50)));
+        assert!(matches!(Score::Mate(8).negated(), Score::Mate(-8)));
+        assert!(matches!(Score::Mate(-3).negated(), Score::Mate(3)));
     }
 
     #[test]

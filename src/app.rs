@@ -133,7 +133,11 @@ impl ChessyApp {
 
     /// Store an engine line at its MultiPV slot, growing `engine_lines` with
     /// placeholders if a higher-numbered line arrives before the lower ones.
-    fn upsert_engine_line(&mut self, info: EngineInfo) {
+    fn upsert_engine_line(&mut self, mut info: EngineInfo) {
+        if self.game.current_position().turn() != PieceColor::White {
+            info.score = info.score.negated();
+        }
+
         if info.multipv == 1 {
             self.eval_score = Some(info.score.clone());
         }

@@ -15,7 +15,6 @@ pub fn show_eval_bar(ui: &mut Ui, score: Option<&Score>, _white_to_move: bool) {
     // white_fraction: 0 = black winning, 1 = white winning
     let white_frac = (clamped + 600.0) / 1200.0;
 
-    // From perspective: if black to move, flip visually? No, eval bar always shows white advantage top.
     let white_width = total_width * white_frac;
 
     painter.rect_filled(rect, 0.0, Color32::from_rgb(220, 220, 220));
