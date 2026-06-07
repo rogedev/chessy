@@ -18,6 +18,14 @@ use crate::{
     },
 };
 
+const SKILL_PRESETS: &[(&str, u32)] = &[
+    ("Beginner", 800),
+    ("Casual", 1200),
+    ("Intermediate", 1600),
+    ("Advanced", 2000),
+    ("Strong", 2400),
+];
+
 #[derive(PartialEq, Clone, Copy)]
 pub enum AppMode {
     Play,
@@ -445,6 +453,21 @@ impl ChessyApp {
                 ui.separator();
 
                 ui.checkbox(&mut limit_strength, "Limit strength");
+
+                ui.horizontal(|ui| {
+                    ui.label("Preset:");
+
+                    for &(label, elo) in SKILL_PRESETS {
+                        let selected = limit_strength && engine_elo == elo;
+
+                        if ui.selectable_label(selected, label).clicked() {
+                            engine_elo = elo;
+                            limit_strength = true;
+                            apply = true;
+                        }
+                    }
+                });
+
                 if limit_strength {
                     ui.horizontal(|ui| {
                         ui.label("ELO:");
@@ -774,5 +797,64 @@ fn apply_theme(ctx: &Context, dark: bool) {
         ctx.set_visuals(egui::Visuals::dark());
     } else {
         ctx.set_visuals(egui::Visuals::light());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ELO_MIN: u32 = 800;
+    const ELO_MAX: u32 = 3200;
+
+    #[test]
+    fn skill_presets_all_within_slider_range() {
+        for &(label, elo) in SKILL_PRESETS {
+            assert!(
+                (ELO_MIN..=ELO_MAX).contains(&elo),
+                "preset '{label}' ELO {elo} is outside slider range {ELO_MIN}..={ELO_MAX}"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_presets_elos_are_unique() {
+        let elos: Vec<u32> = SKILL_PRESETS.iter().map(|&(_, e)| e).collect();
+        let mut seen = std::collections::HashSet::new();
+        for elo in &elos {
+            assert!(seen.insert(elo), "duplicate ELO {elo} in SKILL_PRESETS");
+        }
+    }
+
+    #[test]
+    fn skill_presets_labels_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for &(label, _) in SKILL_PRESETS {
+            assert!(
+                seen.insert(label),
+                "duplicate label '{label}' in SKILL_PRESETS"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_presets_sorted_ascending() {
+        let elos: Vec<u32> = SKILL_PRESETS.iter().map(|&(_, e)| e).collect();
+        let mut sorted = elos.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            elos, sorted,
+            "SKILL_PRESETS must be ordered by ascending ELO"
+        );
+    }
+
+    #[test]
+    fn skill_presets_expected_tiers() {
+        let map: std::collections::HashMap<&str, u32> = SKILL_PRESETS.iter().copied().collect();
+        assert_eq!(map.get("Beginner").copied(), Some(800));
+        assert_eq!(map.get("Casual").copied(), Some(1200));
+        assert_eq!(map.get("Intermediate").copied(), Some(1600));
+        assert_eq!(map.get("Advanced").copied(), Some(2000));
+        assert_eq!(map.get("Strong").copied(), Some(2400));
     }
 }
