@@ -201,7 +201,11 @@ mod tests {
     fn invalid_uci_stops_output_early() {
         let result = pv_to_san(
             &Chess::default(),
-            &["e2e4".to_string(), "notamove".to_string(), "d2d4".to_string()],
+            &[
+                "e2e4".to_string(),
+                "notamove".to_string(),
+                "d2d4".to_string(),
+            ],
         );
         assert_eq!(result, "1. e4");
     }

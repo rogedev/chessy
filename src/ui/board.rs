@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Response, Sense, TextureHandle, Ui, Vec2,
-};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, TextureHandle, Ui, Vec2};
 use resvg::{tiny_skia, usvg};
-use shakmaty::{Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square};
+use shakmaty::{Chess, Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square};
 
+use crate::audio::SoundEvent;
 use crate::chess::Game;
 
 const PIECE_NAMES: &[(&str, PieceColor, Role)] = &[
@@ -125,7 +124,7 @@ impl<'a> BoardWidget<'a> {
         }
     }
 
-    pub fn show(self, ui: &mut Ui) -> Response {
+    pub fn show(self, ui: &mut Ui) -> Option<SoundEvent> {
         let available = ui.available_size();
         let board_size = available.x.min(available.y);
         let sq_size = board_size / 8.0;
@@ -248,6 +247,8 @@ impl<'a> BoardWidget<'a> {
             && !self.game.is_game_over()
             && self.interaction.pending_promotion.is_none();
 
+        let mut pending_sound: Option<SoundEvent> = None;
+
         if can_interact {
             // Update drag position
             if response.dragged()
@@ -273,7 +274,7 @@ impl<'a> BoardWidget<'a> {
                     if is_promotion_move(self.game, from, to) {
                         self.interaction.pending_promotion = Some((from, to));
                     } else {
-                        try_make_move(self.game, from, to);
+                        pending_sound = try_make_move(self.game, from, to);
                     }
                 }
                 self.interaction.drag_from = None;
@@ -285,7 +286,7 @@ impl<'a> BoardWidget<'a> {
                 && let Some(ptr) = response.interact_pointer_pos()
                 && let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped)
             {
-                handle_click(
+                pending_sound = handle_click(
                     self.game,
                     &mut self.interaction.selected,
                     sq,
@@ -294,7 +295,7 @@ impl<'a> BoardWidget<'a> {
             }
         }
 
-        response
+        pending_sound
     }
 
     fn sq_to_rect(&self, sq: Square, board_rect: Rect, sq_size: f32) -> Rect {
@@ -337,19 +338,21 @@ fn handle_click(
     selected: &mut Option<Square>,
     sq: Square,
     pending_promotion: &mut Option<(Square, Square)>,
-) {
+) -> Option<SoundEvent> {
     if let Some(from) = *selected {
         if from == sq {
             *selected = None;
-            return;
+            return None;
         }
         if is_promotion_move(game, from, sq) {
             *pending_promotion = Some((from, sq));
             *selected = None;
+            return None;
         } else {
-            let moved = try_make_move(game, from, sq);
-            if moved {
+            let sound = try_make_move(game, from, sq);
+            if sound.is_some() {
                 *selected = None;
+                return sound;
             } else {
                 let pos = game.current_position();
                 if let Some(piece) = pos.board().piece_at(sq) {
@@ -371,6 +374,7 @@ fn handle_click(
             *selected = Some(sq);
         }
     }
+    None
 }
 
 fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
@@ -387,17 +391,34 @@ fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
     })
 }
 
-pub fn try_make_promotion_move(game: &mut Game, from: Square, to: Square, role: Role) -> bool {
+pub(crate) fn sound_for_move(m: &Move, resulting_pos: &Chess) -> SoundEvent {
+    if resulting_pos.is_stalemate() || resulting_pos.is_insufficient_material() {
+        SoundEvent::Draw
+    } else if m.capture().is_some() || m.is_en_passant() {
+        SoundEvent::Capture
+    } else {
+        SoundEvent::Move
+    }
+}
+
+pub fn try_make_promotion_move(
+    game: &mut Game,
+    from: Square,
+    to: Square,
+    role: Role,
+) -> Option<SoundEvent> {
     let legals = game.current_position().legal_moves();
     let m = legals.iter().find(|m| {
         m.from() == Some(from)
             && m.to() == to
             && matches!(m, Move::Normal { promotion: Some(r), .. } if *r == role)
-    });
-    m.map(|m| game.make_move(*m).is_ok()).unwrap_or(false)
+    })?;
+    let m = *m;
+    game.make_move(m).ok()?;
+    Some(sound_for_move(&m, game.current_position()))
 }
 
-fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
+fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent> {
     let legals = game.current_position().legal_moves();
     let m = legals.iter().find(|m| {
         m.from() == Some(from)
@@ -409,8 +430,10 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> bool {
                     ..
                 }
             )
-    });
-    m.map(|m| game.make_move(*m).is_ok()).unwrap_or(false)
+    })?;
+    let m = *m;
+    game.make_move(m).ok()?;
+    Some(sound_for_move(&m, game.current_position()))
 }
 
 pub fn piece_symbol(piece: Piece) -> &'static str {
@@ -609,24 +632,97 @@ mod tests {
     #[test]
     fn try_make_move_executes_legal_and_rejects_illegal() {
         let mut game = Game::new();
-        assert!(try_make_move(&mut game, Square::E2, Square::E4));
+        assert!(try_make_move(&mut game, Square::E2, Square::E4).is_some());
         assert_eq!(game.cursor, 1);
 
         let mut game2 = Game::new();
-        assert!(!try_make_move(&mut game2, Square::E2, Square::E5));
+        assert!(try_make_move(&mut game2, Square::E2, Square::E5).is_none());
         assert_eq!(game2.cursor, 0);
     }
 
     #[test]
     fn try_make_promotion_move_promotes_to_chosen_role() {
         let mut game = Game::from_fen("8/P7/8/8/8/8/8/k6K w - - 0 1").expect("valid fen");
-        assert!(try_make_promotion_move(
-            &mut game,
-            Square::A7,
-            Square::A8,
-            Role::Queen
-        ));
+        assert!(try_make_promotion_move(&mut game, Square::A7, Square::A8, Role::Queen).is_some());
         assert_eq!(game.cursor, 1);
         assert_eq!(game.san, vec!["a8=Q+"]);
+    }
+
+    fn pos_from_fen(fen: &str) -> Chess {
+        use shakmaty::fen::Fen;
+        let f: Fen = fen.parse().unwrap();
+        f.into_position(shakmaty::CastlingMode::Standard).unwrap()
+    }
+
+    #[test]
+    fn sound_for_move_regular_move() {
+        let pos = Chess::default();
+        let m = pos
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.from() == Some(Square::E2) && m.to() == Square::E4)
+            .unwrap();
+        let mut next = pos.clone();
+        next.play_unchecked(m);
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+    }
+
+    #[test]
+    fn sound_for_move_capture() {
+        // White pawn on e4 can capture black pawn on d5
+        let pos = pos_from_fen("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2");
+        let m = pos
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.from() == Some(Square::E4) && m.to() == Square::D5)
+            .unwrap();
+        let mut next = pos.clone();
+        next.play_unchecked(m);
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Capture));
+    }
+
+    #[test]
+    fn sound_for_move_check_plays_move_sound() {
+        // Check plays Move sound (no dedicated check sound in standard theme)
+        let pos = pos_from_fen("4k3/8/8/8/8/8/8/4K2Q w - - 0 1");
+        let m = pos
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.from() == Some(Square::H1) && m.to() == Square::H8)
+            .unwrap();
+        let mut next = pos.clone();
+        next.play_unchecked(m);
+        assert!(next.is_check(), "expected resulting position to be check");
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+    }
+
+    #[test]
+    fn sound_for_move_checkmate_plays_move_sound() {
+        // Fool's mate: checkmate plays Move sound (same as regular moves)
+        let pos = pos_from_fen("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
+        let m = pos
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.from() == Some(Square::D8) && m.to() == Square::H4)
+            .unwrap();
+        let mut next = pos.clone();
+        next.play_unchecked(m);
+        assert!(next.is_checkmate(), "expected checkmate");
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+    }
+
+    #[test]
+    fn sound_for_move_stalemate() {
+        // Qb6-c7 stalemates the black king on a8 (Ka6 covers a7/b7, Qc7 covers b8)
+        let pos = pos_from_fen("k7/8/KQ6/8/8/8/8/8 w - - 0 1");
+        let m = pos
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.from() == Some(Square::B6) && m.to() == Square::C7)
+            .unwrap();
+        let mut next = pos.clone();
+        next.play_unchecked(m);
+        assert!(next.is_stalemate(), "expected stalemate");
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Draw));
     }
 }

@@ -5,7 +5,7 @@ use shakmaty::Position;
 
 use crate::chess::Game;
 
-pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
+pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool {
     let active_color = if dark_theme {
         Color32::from_rgb(100, 160, 240)
     } else {
@@ -17,6 +17,7 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
         Color32::from_rgb(30, 30, 30)
     };
 
+    let mut clicked = false;
     ScrollArea::vertical()
         .id_salt("moves_scroll")
         .auto_shrink([false; 2])
@@ -52,6 +53,7 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
                             .strong();
                         if ui.button(label).clicked() {
                             game.go_to(i + 1);
+                            clicked = true;
                         }
                         i += 1;
                     } else {
@@ -71,6 +73,7 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
                             .strong();
                         if ui.button(label).clicked() {
                             game.go_to(i + 1);
+                            clicked = true;
                         }
                         i += 1;
 
@@ -84,6 +87,7 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
                                 .strong();
                             if ui.button(label).clicked() {
                                 game.go_to(i + 1);
+                                clicked = true;
                             }
                             i += 1;
                         }
@@ -100,4 +104,5 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) {
                 );
             }
         });
+    clicked
 }

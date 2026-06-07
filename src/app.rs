@@ -4,12 +4,16 @@ use egui::{Color32, Context, FontId, Key, RichText, Ui};
 use shakmaty::{Color as PieceColor, Piece, Position, Role};
 
 use crate::{
+    audio::AudioPlayer,
     chess::{Game, pgn},
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
-        board::{BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, piece_symbol, try_make_promotion_move},
+        board::{
+            BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, piece_symbol,
+            sound_for_move, try_make_promotion_move,
+        },
         moves::show_moves_panel,
     },
 };
@@ -36,6 +40,7 @@ pub struct ChessyApp {
     waiting_for_bestmove: bool,
     show_about: bool,
     piece_textures: PieceTextures,
+    audio: Option<AudioPlayer>,
 }
 
 impl ChessyApp {
@@ -61,6 +66,7 @@ impl ChessyApp {
             waiting_for_bestmove: false,
             show_about: false,
             piece_textures,
+            audio: AudioPlayer::new(),
         };
         app.start_analysis();
         app
@@ -125,7 +131,13 @@ impl ChessyApp {
                     self.engine_running = false;
                     if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        let _ = self.game.make_uci_move(&mv_str);
+                        if self.game.make_uci_move(&mv_str).is_ok() {
+                            if let Some(audio) = &self.audio {
+                                let m = self.game.moves[self.game.cursor - 1];
+                                let event = sound_for_move(&m, self.game.current_position());
+                                audio.play(event);
+                            }
+                        }
                     }
                 }
                 EngineOutput::Ready => {}
@@ -236,12 +248,14 @@ impl ChessyApp {
                 self.game.go_back();
                 self.interaction.selected = None;
                 self.interaction.drag_from = None;
+                self.play_nav_sound();
             }
 
             if i.key_pressed(Key::ArrowRight) {
                 self.game.go_forward();
                 self.interaction.selected = None;
                 self.interaction.drag_from = None;
+                self.play_nav_sound();
             }
 
             if i.key_pressed(Key::Home) {
@@ -252,12 +266,24 @@ impl ChessyApp {
             if i.key_pressed(Key::End) {
                 self.game.go_to_end();
                 self.interaction.selected = None;
+                self.play_nav_sound();
             }
 
             if i.key_pressed(Key::F) {
                 self.flipped = !self.flipped;
             }
         });
+    }
+
+    fn play_nav_sound(&self) {
+        let cursor = self.game.cursor;
+        if cursor == 0 {
+            return;
+        }
+        let Some(audio) = &self.audio else { return };
+        let m = self.game.moves[cursor - 1];
+        let event = sound_for_move(&m, self.game.current_position());
+        audio.play(event);
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
@@ -453,7 +479,10 @@ impl ChessyApp {
                 } else {
                     ui.horizontal(|ui| {
                         for set in &piece_sets {
-                            if ui.selectable_label(piece_set == *set, set.as_str()).clicked() {
+                            if ui
+                                .selectable_label(piece_set == *set, set.as_str())
+                                .clicked()
+                            {
                                 piece_set = set.clone();
                             }
                         }
@@ -539,7 +568,11 @@ impl ChessyApp {
             });
 
         if let Some(role) = chosen_role {
-            try_make_promotion_move(&mut self.game, from, to, role);
+            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role) {
+                if let Some(audio) = &self.audio {
+                    audio.play(event);
+                }
+            }
             self.interaction.pending_promotion = None;
         }
     }
@@ -659,14 +692,17 @@ impl eframe::App for ChessyApp {
                     if ui.button("◀").clicked() {
                         self.game.go_back();
                         self.interaction.selected = None;
+                        self.play_nav_sound();
                     }
                     if ui.button("▶").clicked() {
                         self.game.go_forward();
                         self.interaction.selected = None;
+                        self.play_nav_sound();
                     }
                     if ui.button("▶|").clicked() {
                         self.game.go_to_end();
                         self.interaction.selected = None;
+                        self.play_nav_sound();
                     }
                     if ui.button("⟳").on_hover_text("Flip board").clicked() {
                         self.flipped = !self.flipped;
@@ -678,7 +714,9 @@ impl eframe::App for ChessyApp {
                 // Move list
                 let available = ui.available_size();
                 ui.allocate_ui(available, |ui| {
-                    show_moves_panel(ui, &mut self.game, self.settings.dark_theme);
+                    if show_moves_panel(ui, &mut self.game, self.settings.dark_theme) {
+                        self.play_nav_sound();
+                    }
                 });
             });
 
@@ -708,7 +746,7 @@ impl eframe::App for ChessyApp {
                     egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
-                    BoardWidget::new(
+                    if let Some(event) = BoardWidget::new(
                         &mut self.game,
                         self.flipped,
                         self.settings.dark_theme,
@@ -716,7 +754,12 @@ impl eframe::App for ChessyApp {
                         &mut self.interaction,
                         &self.piece_textures,
                     )
-                    .show(ui);
+                    .show(ui)
+                    {
+                        if let Some(audio) = &self.audio {
+                            audio.play(event);
+                        }
+                    }
                 });
             });
 
