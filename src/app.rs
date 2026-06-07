@@ -131,12 +131,12 @@ impl ChessyApp {
                     self.engine_running = false;
                     if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        if self.game.make_uci_move(&mv_str).is_ok() {
-                            if let Some(audio) = &self.audio {
-                                let m = self.game.moves[self.game.cursor - 1];
-                                let event = sound_for_move(&m, self.game.current_position());
-                                audio.play(event);
-                            }
+                        if self.game.make_uci_move(&mv_str).is_ok()
+                            && let Some(audio) = &self.audio
+                        {
+                            let m = self.game.moves[self.game.cursor - 1];
+                            let event = sound_for_move(&m, self.game.current_position());
+                            audio.play(event);
                         }
                     }
                 }
@@ -568,10 +568,10 @@ impl ChessyApp {
             });
 
         if let Some(role) = chosen_role {
-            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role) {
-                if let Some(audio) = &self.audio {
-                    audio.play(event);
-                }
+            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role)
+                && let Some(audio) = &self.audio
+            {
+                audio.play(event);
             }
             self.interaction.pending_promotion = None;
         }
@@ -755,10 +755,9 @@ impl eframe::App for ChessyApp {
                         &self.piece_textures,
                     )
                     .show(ui)
+                        && let Some(audio) = &self.audio
                     {
-                        if let Some(audio) = &self.audio {
-                            audio.play(event);
-                        }
+                        audio.play(event);
                     }
                 });
             });
