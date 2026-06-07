@@ -1,7 +1,80 @@
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Response, Sense, Ui, Vec2};
+use std::collections::HashMap;
+
+use egui::{
+    Align2, Color32, FontId, Painter, Pos2, Rect, Response, Sense, TextureHandle, Ui, Vec2,
+};
+use resvg::{tiny_skia, usvg};
 use shakmaty::{Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square};
 
 use crate::chess::Game;
+
+const PIECE_NAMES: &[(&str, PieceColor, Role)] = &[
+    ("wK", PieceColor::White, Role::King),
+    ("wQ", PieceColor::White, Role::Queen),
+    ("wR", PieceColor::White, Role::Rook),
+    ("wB", PieceColor::White, Role::Bishop),
+    ("wN", PieceColor::White, Role::Knight),
+    ("wP", PieceColor::White, Role::Pawn),
+    ("bK", PieceColor::Black, Role::King),
+    ("bQ", PieceColor::Black, Role::Queen),
+    ("bR", PieceColor::Black, Role::Rook),
+    ("bB", PieceColor::Black, Role::Bishop),
+    ("bN", PieceColor::Black, Role::Knight),
+    ("bP", PieceColor::Black, Role::Pawn),
+];
+
+pub struct PieceTextures {
+    handles: HashMap<(PieceColor, Role), TextureHandle>,
+}
+
+impl PieceTextures {
+    pub fn load(ctx: &egui::Context, set_name: &str) -> Self {
+        let handles = PIECE_NAMES
+            .iter()
+            .filter_map(|&(name, color, role)| {
+                let path = format!("assets/pieces/{}/{}.svg", set_name, name);
+                let bytes = std::fs::read(path).ok()?;
+                let handle = rasterize_svg(ctx, name, &bytes, 256)?;
+                Some(((color, role), handle))
+            })
+            .collect();
+        Self { handles }
+    }
+
+    pub fn get(&self, piece: Piece) -> Option<&TextureHandle> {
+        self.handles.get(&(piece.color, piece.role))
+    }
+}
+
+pub fn available_piece_sets() -> Vec<String> {
+    let mut sets: Vec<String> = std::fs::read_dir("assets/pieces")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .collect();
+    sets.sort();
+    sets
+}
+
+fn rasterize_svg(
+    ctx: &egui::Context,
+    name: &str,
+    bytes: &[u8],
+    target: u32,
+) -> Option<TextureHandle> {
+    let opts = usvg::Options::default();
+    let tree = usvg::Tree::from_data(bytes, &opts).ok()?;
+    let svg_size = tree.size();
+    let scale = target as f32 / svg_size.width().max(svg_size.height());
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+    let mut pixmap = tiny_skia::Pixmap::new(target, target)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let color_image =
+        egui::ColorImage::from_rgba_unmultiplied([target as usize, target as usize], pixmap.data());
+    Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
+}
 
 // Light theme
 const LIGHT_SQ_LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
@@ -30,6 +103,7 @@ pub struct BoardWidget<'a> {
     dark_theme: bool,
     interactive: bool,
     interaction: &'a mut BoardInteraction,
+    piece_textures: &'a PieceTextures,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -39,6 +113,7 @@ impl<'a> BoardWidget<'a> {
         dark_theme: bool,
         interactive: bool,
         interaction: &'a mut BoardInteraction,
+        piece_textures: &'a PieceTextures,
     ) -> Self {
         Self {
             game,
@@ -46,6 +121,7 @@ impl<'a> BoardWidget<'a> {
             dark_theme,
             interactive,
             interaction,
+            piece_textures,
         }
     }
 
@@ -138,7 +214,13 @@ impl<'a> BoardWidget<'a> {
                 if self.interaction.drag_from != Some(sq)
                     && let Some(piece) = board.piece_at(sq)
                 {
-                    draw_piece(&painter, piece, sq_rect, sq_size);
+                    draw_piece(
+                        &painter,
+                        piece,
+                        sq_rect,
+                        sq_size,
+                        self.piece_textures.get(piece),
+                    );
                 }
             }
         }
@@ -152,7 +234,13 @@ impl<'a> BoardWidget<'a> {
             && let Some(piece) = board.piece_at(from_sq)
         {
             let drag_rect = Rect::from_center_size(cursor_pos, Vec2::splat(sq_size));
-            draw_piece(&painter, piece, drag_rect, sq_size);
+            draw_piece(
+                &painter,
+                piece,
+                drag_rect,
+                sq_size,
+                self.piece_textures.get(piece),
+            );
         }
 
         let can_interact = self.interactive
@@ -342,10 +430,20 @@ pub fn piece_symbol(piece: Piece) -> &'static str {
     }
 }
 
-fn draw_piece(painter: &Painter, piece: Piece, rect: Rect, sq_size: f32) {
-    let symbol = piece_symbol(piece);
+fn draw_piece(
+    painter: &Painter,
+    piece: Piece,
+    rect: Rect,
+    sq_size: f32,
+    texture: Option<&TextureHandle>,
+) {
+    if let Some(tex) = texture {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
+        return;
+    }
 
-    // Shadow / outline for visibility on both square colors
+    let symbol = piece_symbol(piece);
     let (fg, shadow) = match piece.color {
         PieceColor::White => (Color32::WHITE, Color32::from_rgb(40, 40, 40)),
         PieceColor::Black => (
@@ -353,10 +451,7 @@ fn draw_piece(painter: &Painter, piece: Piece, rect: Rect, sq_size: f32) {
             Color32::from_rgb(200, 200, 200),
         ),
     };
-
     let font = FontId::proportional(sq_size * 0.78);
-
-    // Draw outline by offsetting slightly
     for dx in [-1.0f32, 0.0, 1.0] {
         for dy in [-1.0f32, 0.0, 1.0] {
             if dx != 0.0 || dy != 0.0 {
@@ -370,7 +465,6 @@ fn draw_piece(painter: &Painter, piece: Piece, rect: Rect, sq_size: f32) {
             }
         }
     }
-
     painter.text(rect.center(), Align2::CENTER_CENTER, symbol, font, fg);
 }
 
@@ -462,28 +556,46 @@ mod tests {
     }
 
     #[test]
-    fn piece_symbol_maps_color_and_role() {
-        assert_eq!(
-            piece_symbol(Piece {
-                color: PieceColor::White,
-                role: Role::King
-            }),
-            "♔"
-        );
-        assert_eq!(
-            piece_symbol(Piece {
-                color: PieceColor::Black,
-                role: Role::Queen
-            }),
-            "♛"
-        );
-        assert_eq!(
-            piece_symbol(Piece {
-                color: PieceColor::White,
-                role: Role::Pawn
-            }),
-            "♙"
-        );
+    fn piece_symbol_covers_all_twelve_pieces() {
+        use PieceColor::{Black, White};
+        let cases = [
+            (White, Role::King, "♔"),
+            (White, Role::Queen, "♕"),
+            (White, Role::Rook, "♖"),
+            (White, Role::Bishop, "♗"),
+            (White, Role::Knight, "♘"),
+            (White, Role::Pawn, "♙"),
+            (Black, Role::King, "♚"),
+            (Black, Role::Queen, "♛"),
+            (Black, Role::Rook, "♜"),
+            (Black, Role::Bishop, "♝"),
+            (Black, Role::Knight, "♞"),
+            (Black, Role::Pawn, "♟"),
+        ];
+        for (color, role, expected) in cases {
+            assert_eq!(piece_symbol(Piece { color, role }), expected);
+        }
+    }
+
+    #[test]
+    fn available_piece_sets_returns_sorted_known_sets() {
+        let sets = available_piece_sets();
+        // The three bundled sets must all be present.
+        assert!(sets.contains(&"alpha".to_string()));
+        assert!(sets.contains(&"cardinal".to_string()));
+        assert!(sets.contains(&"cburnett".to_string()));
+        // The list must be sorted.
+        let mut sorted = sets.clone();
+        sorted.sort();
+        assert_eq!(sets, sorted);
+    }
+
+    #[test]
+    fn available_piece_sets_contains_no_duplicates() {
+        let sets = available_piece_sets();
+        let mut unique = sets.clone();
+        unique.dedup();
+        assert_eq!(sets, unique);
     }
 
     #[test]

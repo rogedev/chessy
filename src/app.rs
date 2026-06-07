@@ -9,7 +9,7 @@ use crate::{
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
-        board::{BoardInteraction, BoardWidget, piece_symbol, try_make_promotion_move},
+        board::{BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, piece_symbol, try_make_promotion_move},
         moves::show_moves_panel,
     },
 };
@@ -32,10 +32,10 @@ pub struct ChessyApp {
     show_settings: bool,
     flipped: bool,
     interaction: BoardInteraction,
-    // Tracks which position the engine last analyzed to avoid redundant sends
     last_analyzed_fen: String,
     waiting_for_bestmove: bool,
     show_about: bool,
+    piece_textures: PieceTextures,
 }
 
 impl ChessyApp {
@@ -43,6 +43,7 @@ impl ChessyApp {
         let settings = Settings::load();
 
         let engine = UciClient::new(Path::new(&settings.engine_path)).ok();
+        let piece_textures = PieceTextures::load(&_cc.egui_ctx, &settings.piece_set);
 
         let mut app = Self {
             game: Game::new(),
@@ -59,6 +60,7 @@ impl ChessyApp {
             last_analyzed_fen: String::new(),
             waiting_for_bestmove: false,
             show_about: false,
+            piece_textures,
         };
         app.start_analysis();
         app
@@ -389,17 +391,18 @@ impl ChessyApp {
     }
 
     fn show_settings_window(&mut self, ctx: &Context) {
-        // Extract fields to locals to avoid simultaneous mutable borrows in the closure
         let mut engine_path = self.settings.engine_path.clone();
         let mut limit_strength = self.settings.limit_strength;
         let mut engine_elo = self.settings.engine_elo;
         let mut analysis_depth = self.settings.analysis_depth;
         let mut movetime_ms = self.settings.movetime_ms;
         let mut multipv = self.settings.multipv;
+        let mut piece_set = self.settings.piece_set.clone();
+        let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
 
-        egui::Window::new("Engine Settings")
+        egui::Window::new("Settings")
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
@@ -440,6 +443,25 @@ impl ChessyApp {
 
                 ui.separator();
 
+                ui.label("Piece style:");
+                if piece_sets.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No piece sets found in assets/pieces/")
+                            .color(Color32::GRAY)
+                            .italics(),
+                    );
+                } else {
+                    ui.horizontal(|ui| {
+                        for set in &piece_sets {
+                            if ui.selectable_label(piece_set == *set, set.as_str()).clicked() {
+                                piece_set = set.clone();
+                            }
+                        }
+                    });
+                }
+
+                ui.separator();
+
                 ui.horizontal(|ui| {
                     if ui.button("Apply & Reconnect").clicked() {
                         apply = true;
@@ -451,13 +473,13 @@ impl ChessyApp {
                 });
             });
 
-        // Write back locals to settings
         self.settings.engine_path = engine_path;
         self.settings.limit_strength = limit_strength;
         self.settings.engine_elo = engine_elo;
         self.settings.analysis_depth = analysis_depth;
         self.settings.movetime_ms = movetime_ms;
         self.settings.multipv = multipv;
+        self.settings.piece_set = piece_set;
 
         if close {
             self.show_settings = false;
@@ -466,6 +488,7 @@ impl ChessyApp {
             self.settings.save();
             self.reconnect_engine();
             self.start_analysis();
+            self.piece_textures = PieceTextures::load(ctx, &self.settings.piece_set);
         }
     }
 
@@ -691,6 +714,7 @@ impl eframe::App for ChessyApp {
                         self.settings.dark_theme,
                         is_interactive,
                         &mut self.interaction,
+                        &self.piece_textures,
                     )
                     .show(ui);
                 });

@@ -113,7 +113,7 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
     }
 }
 
-fn pv_to_san(position: &Chess, pv: &[String]) -> String {
+pub(crate) fn pv_to_san(position: &Chess, pv: &[String]) -> String {
     let mut pos = position.clone();
     let mut parts = vec![];
     let mut move_num = pos.fullmoves().get();
@@ -152,4 +152,78 @@ fn pv_to_san(position: &Chess, pv: &[String]) -> String {
     }
 
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shakmaty::uci::UciMove;
+
+    fn pos_after(moves: &[&str]) -> Chess {
+        let mut pos = Chess::default();
+        for uci_str in moves {
+            let uci = uci_str.parse::<UciMove>().unwrap();
+            let m = uci.to_move(&pos).unwrap();
+            pos = pos.play(m).unwrap();
+        }
+        pos
+    }
+
+    #[test]
+    fn single_white_move_from_start() {
+        let result = pv_to_san(&Chess::default(), &["e2e4".to_string()]);
+        assert_eq!(result, "1. e4");
+    }
+
+    #[test]
+    fn single_black_move_includes_ellipsis() {
+        let pos = pos_after(&["e2e4"]);
+        let result = pv_to_san(&pos, &["e7e5".to_string()]);
+        assert_eq!(result, "1... e5");
+    }
+
+    #[test]
+    fn two_moves_share_move_number() {
+        let result = pv_to_san(&Chess::default(), &["e2e4".to_string(), "e7e5".to_string()]);
+        assert_eq!(result, "1. e4 e5");
+    }
+
+    #[test]
+    fn move_number_increments_after_black_responds() {
+        let result = pv_to_san(
+            &Chess::default(),
+            &["e2e4".to_string(), "e7e5".to_string(), "g1f3".to_string()],
+        );
+        assert_eq!(result, "1. e4 e5 2. Nf3");
+    }
+
+    #[test]
+    fn invalid_uci_stops_output_early() {
+        let result = pv_to_san(
+            &Chess::default(),
+            &["e2e4".to_string(), "notamove".to_string(), "d2d4".to_string()],
+        );
+        assert_eq!(result, "1. e4");
+    }
+
+    #[test]
+    fn respects_eight_move_limit() {
+        let moves: Vec<String> = [
+            "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let result = pv_to_san(&Chess::default(), &moves);
+        let move_tokens = result
+            .split_whitespace()
+            .filter(|t| !t.ends_with('.') && !t.ends_with("..."))
+            .count();
+        assert_eq!(move_tokens, 8);
+    }
+
+    #[test]
+    fn empty_pv_returns_empty_string() {
+        assert_eq!(pv_to_san(&Chess::default(), &[]), "");
+    }
 }
