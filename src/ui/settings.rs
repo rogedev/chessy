@@ -56,6 +56,22 @@ fn default_piece_set() -> String {
     "cburnett".to_string()
 }
 
+fn default_engine_path() -> String {
+    // Try common locations
+    let candidates = [
+        "/usr/local/bin/stockfish",
+        "/usr/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
+        "stockfish",
+    ];
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return c.to_string();
+        }
+    }
+    "stockfish".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,26 +115,12 @@ mod tests {
 
     #[test]
     fn piece_set_roundtrips_through_json() {
-        let mut s = Settings::default();
-        s.piece_set = "cardinal".to_string();
+        let s = Settings {
+            piece_set: "cardinal".to_string(),
+            ..Settings::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let s2: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s2.piece_set, "cardinal");
     }
-}
-
-fn default_engine_path() -> String {
-    // Try common locations
-    let candidates = [
-        "/usr/local/bin/stockfish",
-        "/usr/bin/stockfish",
-        "/opt/homebrew/bin/stockfish",
-        "stockfish",
-    ];
-    for c in &candidates {
-        if std::path::Path::new(c).exists() {
-            return c.to_string();
-        }
-    }
-    "stockfish".to_string()
 }
