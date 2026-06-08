@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use egui::{Color32, Context, FontId, Key, RichText, Ui};
-use shakmaty::{Color as PieceColor, Piece, Position, Role};
+use shakmaty::{Color as PieceColor, Position, Role};
 
 use crate::{
     audio::AudioPlayer,
@@ -11,8 +11,8 @@ use crate::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
         board::{
-            BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, piece_symbol,
-            sound_for_move, try_make_promotion_move,
+            BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, sound_for_move,
+            try_make_promotion_move,
         },
         moves::show_moves_panel,
     },
@@ -567,7 +567,6 @@ impl ChessyApp {
         let Some((from, to)) = self.interaction.pending_promotion else {
             return;
         };
-        let turn_color = self.game.current_position().turn();
         let mut chosen_role: Option<Role> = None;
 
         egui::Window::new("Promote Pawn")
@@ -579,11 +578,14 @@ impl ChessyApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
-                        let symbol = piece_symbol(Piece {
-                            color: turn_color,
-                            role,
-                        });
-                        if ui.button(RichText::new(symbol).size(40.0)).clicked() {
+                        let label = match role {
+                            Role::Queen => "Queen",
+                            Role::Rook => "Rook",
+                            Role::Bishop => "Bishop",
+                            Role::Knight => "Knight",
+                            _ => unreachable!(),
+                        };
+                        if ui.button(label).clicked() {
                             chosen_role = Some(role);
                         }
                     }

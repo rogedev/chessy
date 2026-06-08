@@ -213,13 +213,7 @@ impl<'a> BoardWidget<'a> {
                 if self.interaction.drag_from != Some(sq)
                     && let Some(piece) = board.piece_at(sq)
                 {
-                    draw_piece(
-                        &painter,
-                        piece,
-                        sq_rect,
-                        sq_size,
-                        self.piece_textures.get(piece),
-                    );
+                    draw_piece(&painter, sq_rect, self.piece_textures.get(piece));
                 }
             }
         }
@@ -233,13 +227,7 @@ impl<'a> BoardWidget<'a> {
             && let Some(piece) = board.piece_at(from_sq)
         {
             let drag_rect = Rect::from_center_size(cursor_pos, Vec2::splat(sq_size));
-            draw_piece(
-                &painter,
-                piece,
-                drag_rect,
-                sq_size,
-                self.piece_textures.get(piece),
-            );
+            draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
         }
 
         let can_interact = self.interactive
@@ -314,23 +302,34 @@ impl<'a> BoardWidget<'a> {
 fn pos_to_sq(ptr: Pos2, board_rect: Rect, sq_size: f32, flipped: bool) -> Option<Square> {
     let rel_x = ptr.x - board_rect.min.x;
     let rel_y = ptr.y - board_rect.min.y;
+
     if rel_x < 0.0 || rel_y < 0.0 {
         return None;
     }
+
     let file_idx = (rel_x / sq_size) as u32;
     let rank_idx = (rel_y / sq_size) as u32;
+
     if file_idx >= 8 || rank_idx >= 8 {
         return None;
     }
+
     let (actual_file, actual_rank) = if flipped {
         (7 - file_idx, rank_idx)
     } else {
         (file_idx, 7 - rank_idx)
     };
+
     Some(Square::from_coords(
         File::new(actual_file),
         Rank::new(actual_rank),
     ))
+}
+
+fn own_piece_at(game: &Game, sq: Square) -> Option<Square> {
+    let pos = game.current_position();
+    let piece = pos.board().piece_at(sq)?;
+    (piece.color == pos.turn()).then_some(sq)
 }
 
 fn handle_click(
@@ -339,41 +338,30 @@ fn handle_click(
     sq: Square,
     pending_promotion: &mut Option<(Square, Square)>,
 ) -> Option<SoundEvent> {
-    if let Some(from) = *selected {
-        if from == sq {
-            *selected = None;
-            return None;
-        }
-        if is_promotion_move(game, from, sq) {
-            *pending_promotion = Some((from, sq));
-            *selected = None;
-            return None;
-        } else {
-            let sound = try_make_move(game, from, sq);
-            if sound.is_some() {
-                *selected = None;
-                return sound;
-            } else {
-                let pos = game.current_position();
-                if let Some(piece) = pos.board().piece_at(sq) {
-                    if piece.color == pos.turn() {
-                        *selected = Some(sq);
-                    } else {
-                        *selected = None;
-                    }
-                } else {
-                    *selected = None;
-                }
-            }
-        }
-    } else {
-        let pos = game.current_position();
-        if let Some(piece) = pos.board().piece_at(sq)
-            && piece.color == pos.turn()
-        {
-            *selected = Some(sq);
-        }
+    let Some(from) = *selected else {
+        *selected = own_piece_at(game, sq);
+        return None;
+    };
+
+    if from == sq {
+        *selected = None;
+        return None;
     }
+
+    if is_promotion_move(game, from, sq) {
+        *pending_promotion = Some((from, sq));
+        *selected = None;
+        return None;
+    }
+
+    let sound = try_make_move(game, from, sq);
+
+    if sound.is_some() {
+        *selected = None;
+        return sound;
+    }
+
+    *selected = own_piece_at(game, sq);
     None
 }
 
@@ -393,12 +381,14 @@ fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
 
 pub(crate) fn sound_for_move(m: &Move, resulting_pos: &Chess) -> SoundEvent {
     if resulting_pos.is_stalemate() || resulting_pos.is_insufficient_material() {
-        SoundEvent::Draw
-    } else if m.capture().is_some() || m.is_en_passant() {
-        SoundEvent::Capture
-    } else {
-        SoundEvent::Move
+        return SoundEvent::Draw;
     }
+
+    if m.capture().is_some() || m.is_en_passant() {
+        return SoundEvent::Capture;
+    }
+
+    SoundEvent::Move
 }
 
 pub fn try_make_promotion_move(
@@ -436,59 +426,11 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent
     Some(sound_for_move(&m, game.current_position()))
 }
 
-pub fn piece_symbol(piece: Piece) -> &'static str {
-    match (piece.color, piece.role) {
-        (PieceColor::White, Role::King) => "♔",
-        (PieceColor::White, Role::Queen) => "♕",
-        (PieceColor::White, Role::Rook) => "♖",
-        (PieceColor::White, Role::Bishop) => "♗",
-        (PieceColor::White, Role::Knight) => "♘",
-        (PieceColor::White, Role::Pawn) => "♙",
-        (PieceColor::Black, Role::King) => "♚",
-        (PieceColor::Black, Role::Queen) => "♛",
-        (PieceColor::Black, Role::Rook) => "♜",
-        (PieceColor::Black, Role::Bishop) => "♝",
-        (PieceColor::Black, Role::Knight) => "♞",
-        (PieceColor::Black, Role::Pawn) => "♟",
-    }
-}
-
-fn draw_piece(
-    painter: &Painter,
-    piece: Piece,
-    rect: Rect,
-    sq_size: f32,
-    texture: Option<&TextureHandle>,
-) {
+fn draw_piece(painter: &Painter, rect: Rect, texture: Option<&TextureHandle>) {
     if let Some(tex) = texture {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(tex.id(), rect, uv, Color32::WHITE);
-        return;
     }
-
-    let symbol = piece_symbol(piece);
-    let (fg, shadow) = match piece.color {
-        PieceColor::White => (Color32::WHITE, Color32::from_rgb(40, 40, 40)),
-        PieceColor::Black => (
-            Color32::from_rgb(20, 20, 20),
-            Color32::from_rgb(200, 200, 200),
-        ),
-    };
-    let font = FontId::proportional(sq_size * 0.78);
-    for dx in [-1.0f32, 0.0, 1.0] {
-        for dy in [-1.0f32, 0.0, 1.0] {
-            if dx != 0.0 || dy != 0.0 {
-                painter.text(
-                    rect.center() + Vec2::new(dx * 1.5, dy * 1.5),
-                    Align2::CENTER_CENTER,
-                    symbol,
-                    font.clone(),
-                    shadow,
-                );
-            }
-        }
-    }
-    painter.text(rect.center(), Align2::CENTER_CENTER, symbol, font, fg);
 }
 
 fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool, dark_theme: bool) {
@@ -497,6 +439,7 @@ fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool,
     } else {
         Color32::from_rgb(100, 100, 100)
     };
+
     let font = FontId::proportional(sq_size * 0.2);
 
     let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
@@ -576,28 +519,6 @@ mod tests {
         let rect = board_rect();
         assert_eq!(pos_to_sq(Pos2::new(850.0, 50.0), rect, 100.0, false), None);
         assert_eq!(pos_to_sq(Pos2::new(-10.0, 50.0), rect, 100.0, false), None);
-    }
-
-    #[test]
-    fn piece_symbol_covers_all_twelve_pieces() {
-        use PieceColor::{Black, White};
-        let cases = [
-            (White, Role::King, "♔"),
-            (White, Role::Queen, "♕"),
-            (White, Role::Rook, "♖"),
-            (White, Role::Bishop, "♗"),
-            (White, Role::Knight, "♘"),
-            (White, Role::Pawn, "♙"),
-            (Black, Role::King, "♚"),
-            (Black, Role::Queen, "♛"),
-            (Black, Role::Rook, "♜"),
-            (Black, Role::Bishop, "♝"),
-            (Black, Role::Knight, "♞"),
-            (Black, Role::Pawn, "♟"),
-        ];
-        for (color, role, expected) in cases {
-            assert_eq!(piece_symbol(Piece { color, role }), expected);
-        }
     }
 
     #[test]

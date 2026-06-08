@@ -17,92 +17,103 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool 
         Color32::from_rgb(30, 30, 30)
     };
 
+    let move_text =
+        |san: &str, font_size: f32| RichText::new(san).font(FontId::proportional(font_size));
+    let num_label = |text: String| move_text(&text, 13.0).color(Color32::GRAY);
+
+    let move_count = game.moves.len();
+    let cursor = game.cursor;
+    let black_first = game.start_position().turn() == PieceColor::Black;
+
     let mut clicked = false;
+
     ScrollArea::vertical()
         .id_salt("moves_scroll")
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::new(2.0, 1.0);
 
-            let move_count = game.moves.len();
-            let cursor = game.cursor;
-            let start_turn = game.start_position().turn();
+            if move_count == 0 {
+                ui.label(
+                    move_text("No moves yet", 13.0)
+                        .color(Color32::GRAY)
+                        .italics(),
+                );
+                return;
+            }
 
-            // Determine move number offset if black starts
-            let black_first = start_turn == PieceColor::Black;
-
+            // Each row covers one full move pair. When black starts, row 0 has only a black move.
             let mut i = 0usize;
             while i < move_count {
-                ui.horizontal_wrapped(|ui| {
-                    // Move number
-                    let move_num = i / 2 + 1;
+                let move_num = i / 2 + 1;
 
+                ui.horizontal_wrapped(|ui| {
                     if i == 0 && black_first {
-                        // Show "1..." prefix for black's first move
-                        ui.label(
-                            RichText::new(format!("{}...", move_num))
-                                .color(Color32::GRAY)
-                                .font(FontId::proportional(13.0)),
+                        ui.label(num_label(format!("{}...", move_num)));
+                        render_move_button(
+                            ui,
+                            game,
+                            i,
+                            cursor,
+                            active_color,
+                            text_color,
+                            &mut clicked,
                         );
-                        // Only black move
-                        let is_current = cursor == i + 1;
-                        let san = &game.san[i];
-                        let label = RichText::new(san.as_str())
-                            .font(FontId::proportional(13.0))
-                            .color(if is_current { active_color } else { text_color })
-                            .strong();
-                        if ui.button(label).clicked() {
-                            game.go_to(i + 1);
-                            clicked = true;
-                        }
                         i += 1;
                     } else {
-                        // White move
-                        if i.is_multiple_of(2) {
-                            ui.label(
-                                RichText::new(format!("{}.", move_num))
-                                    .color(Color32::GRAY)
-                                    .font(FontId::proportional(13.0)),
-                            );
-                        }
-                        let is_current = cursor == i + 1;
-                        let san = &game.san[i];
-                        let label = RichText::new(san.as_str())
-                            .font(FontId::proportional(13.0))
-                            .color(if is_current { active_color } else { text_color })
-                            .strong();
-                        if ui.button(label).clicked() {
-                            game.go_to(i + 1);
-                            clicked = true;
-                        }
+                        ui.label(num_label(format!("{}.", move_num)));
+                        render_move_button(
+                            ui,
+                            game,
+                            i,
+                            cursor,
+                            active_color,
+                            text_color,
+                            &mut clicked,
+                        );
                         i += 1;
 
-                        // Black move
                         if i < move_count {
-                            let is_current = cursor == i + 1;
-                            let san = &game.san[i];
-                            let label = RichText::new(san.as_str())
-                                .font(FontId::proportional(13.0))
-                                .color(if is_current { active_color } else { text_color })
-                                .strong();
-                            if ui.button(label).clicked() {
-                                game.go_to(i + 1);
-                                clicked = true;
-                            }
+                            render_move_button(
+                                ui,
+                                game,
+                                i,
+                                cursor,
+                                active_color,
+                                text_color,
+                                &mut clicked,
+                            );
                             i += 1;
                         }
                     }
                 });
             }
-
-            if move_count == 0 {
-                ui.label(
-                    RichText::new("No moves yet")
-                        .color(Color32::GRAY)
-                        .font(FontId::proportional(13.0))
-                        .italics(),
-                );
-            }
         });
+
     clicked
+}
+
+fn render_move_button(
+    ui: &mut Ui,
+    game: &mut Game,
+    index: usize,
+    cursor: usize,
+    active_color: Color32,
+    text_color: Color32,
+    clicked: &mut bool,
+) {
+    let color = if cursor == index + 1 {
+        active_color
+    } else {
+        text_color
+    };
+    let label = RichText::new(game.san[index].as_str())
+        .font(FontId::proportional(13.0))
+        .color(color)
+        .strong();
+
+    if ui.button(label).clicked() {
+        game.go_to(index + 1);
+        *clicked = true;
+    }
 }

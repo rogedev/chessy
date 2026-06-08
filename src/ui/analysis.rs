@@ -35,28 +35,24 @@ pub fn show_eval_bar(ui: &mut Ui, score: Option<&Score>, _white_to_move: bool) {
     // Score label
     if let Some(s) = score {
         let label = s.display();
-        let text_x = if white_frac > 0.5 {
-            rect.min.x + 4.0
+
+        if white_frac > 0.5 {
+            painter.text(
+                egui::Pos2::new(rect.min.x + 4.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &label,
+                FontId::proportional(11.0),
+                Color32::BLACK,
+            );
         } else {
-            rect.max.x - 4.0
-        };
-        let color = if white_frac > 0.5 {
-            Color32::BLACK
-        } else {
-            Color32::WHITE
-        };
-        let align = if white_frac > 0.5 {
-            egui::Align2::LEFT_CENTER
-        } else {
-            egui::Align2::RIGHT_CENTER
-        };
-        painter.text(
-            egui::Pos2::new(text_x, rect.center().y),
-            align,
-            &label,
-            FontId::proportional(11.0),
-            color,
-        );
+            painter.text(
+                egui::Pos2::new(rect.max.x - 4.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &label,
+                FontId::proportional(11.0),
+                Color32::WHITE,
+            );
+        }
     }
 }
 
@@ -66,11 +62,13 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
     } else {
         Color32::from_rgb(30, 30, 30)
     };
+
     let score_color = if dark_theme {
         Color32::from_rgb(100, 200, 100)
     } else {
         Color32::from_rgb(0, 130, 0)
     };
+
     let depth_color = Color32::GRAY;
 
     if lines.is_empty() {
@@ -116,33 +114,27 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
 pub(crate) fn pv_to_san(position: &Chess, pv: &[String]) -> String {
     let mut pos = position.clone();
     let mut parts = vec![];
-    let mut move_num = pos.fullmoves().get();
     let mut first = true;
 
     for uci_str in pv.iter().take(8) {
         let Ok(uci) = uci_str.parse::<UciMove>() else {
             break;
         };
+
         let Ok(m) = uci.to_move(&pos) else { break };
         let san = shakmaty::san::SanPlus::from_move(pos.clone(), m);
 
-        if first || pos.turn() == shakmaty::Color::White {
-            if pos.turn() == shakmaty::Color::White {
-                parts.push(format!("{}.", move_num));
-                if !first {
-                    move_num += 1;
-                }
-            } else if first {
-                parts.push(format!("{}...", move_num));
-            }
+        let move_num = pos.fullmoves();
+
+        if pos.turn() == shakmaty::Color::White {
+            parts.push(format!("{}.", move_num));
+        } else if first {
+            parts.push(format!("{}...", move_num));
         }
+
         first = false;
 
         parts.push(san.to_string());
-
-        if pos.turn() == shakmaty::Color::Black {
-            move_num += 1;
-        }
 
         if let Ok(new_pos) = pos.play(m) {
             pos = new_pos;

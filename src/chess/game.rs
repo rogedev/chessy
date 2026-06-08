@@ -114,17 +114,22 @@ impl Game {
     }
 
     pub fn outcome_string(&self) -> Option<String> {
-        let pos = self.current_position();
-        if pos.is_checkmate() {
-            let winner = pos.turn().other();
-            Some(format!("{} wins by checkmate", winner))
-        } else if pos.is_stalemate() {
-            Some("Draw by stalemate".to_string())
-        } else if pos.is_insufficient_material() {
-            Some("Draw by insufficient material".to_string())
-        } else {
-            None
+        let position = self.current_position();
+
+        if position.is_checkmate() {
+            let winner = position.turn().other();
+            return Some(format!("{} wins by checkmate", winner));
         }
+
+        if position.is_stalemate() {
+            return Some("Draw by stalemate".to_string());
+        }
+
+        if position.is_insufficient_material() {
+            return Some("Draw by insufficient material".to_string());
+        }
+
+        None
     }
 
     /// Try to make a move from UCI string (e.g. "e2e4") in the current position.
@@ -144,11 +149,13 @@ impl Game {
             let val = self.headers.get(*key).map(|s| s.as_str()).unwrap_or("?");
             out.push_str(&format!("[{} \"{}\"]\n", key, val));
         }
+
         for (k, v) in &self.headers {
             if !header_order.contains(&k.as_str()) {
                 out.push_str(&format!("[{} \"{}\"]\n", k, v));
             }
         }
+
         out.push('\n');
 
         // Moves
@@ -157,15 +164,21 @@ impl Game {
 
         for (i, san_str) in self.san.iter().enumerate() {
             let move_num = i / 2 + 1;
+
             if i == 0 {
                 if is_black_first {
                     out.push_str(&format!("{}... ", move_num));
                 } else {
                     out.push_str(&format!("{}. ", move_num));
                 }
-            } else if i.is_multiple_of(2) {
+                out.push_str(san_str);
+                out.push(' ');
+            }
+
+            if i.is_multiple_of(2) {
                 out.push_str(&format!("{}. ", move_num));
             }
+
             out.push_str(san_str);
             out.push(' ');
         }
