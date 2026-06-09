@@ -63,14 +63,6 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
         Color32::from_rgb(30, 30, 30)
     };
 
-    let score_color = if dark_theme {
-        Color32::from_rgb(100, 200, 100)
-    } else {
-        Color32::from_rgb(0, 130, 0)
-    };
-
-    let depth_color = Color32::GRAY;
-
     if lines.is_empty() {
         ui.label(
             RichText::new("Engine not running")
@@ -81,33 +73,60 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
         return;
     }
 
+    // Fixed-width eval/depth columns keep the table aligned across rows; the move
+    const EVAL_W: f32 = 48.0;
+    const DEPTH_W: f32 = 32.0;
+    const ROW_H: f32 = 18.0;
+
     for info in lines {
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(info.score.display())
-                    .font(FontId::monospace(12.0))
-                    .color(score_color)
-                    .strong(),
+            ui.add_sized(
+                Vec2::new(EVAL_W, ROW_H),
+                egui::Label::new(
+                    RichText::new(info.score.display())
+                        .font(FontId::monospace(12.0))
+                        .color(eval_color(&info.score, dark_theme))
+                        .strong(),
+                ),
             );
-            ui.label(
-                RichText::new(format!("d{}", info.depth))
-                    .font(FontId::proportional(11.0))
-                    .color(depth_color),
+            ui.add_sized(
+                Vec2::new(DEPTH_W, ROW_H),
+                egui::Label::new(
+                    RichText::new(format!("d{}", info.depth))
+                        .font(FontId::proportional(11.0))
+                        .color(Color32::GRAY),
+                ),
+            );
+
+            let pv_san = pv_to_san(position, &info.pv);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(pv_san)
+                        .font(FontId::proportional(12.0))
+                        .color(text_color),
+                )
+                .truncate(),
             );
         });
+    }
+}
 
-        let pv_san = pv_to_san(position, &info.pv);
-
-        ui.add(
-            egui::Label::new(
-                RichText::new(pv_san)
-                    .font(FontId::proportional(12.0))
-                    .color(text_color),
-            )
-            .wrap(),
-        );
-
-        ui.add_space(2.0);
+fn eval_color(score: &Score, dark_theme: bool) -> Color32 {
+    let cp = score.as_cp_f32();
+    if cp > 10.0 {
+        if dark_theme {
+            Color32::from_rgb(100, 200, 100)
+        } else {
+            Color32::from_rgb(0, 130, 0)
+        }
+    } else if cp < -10.0 {
+        if dark_theme {
+            Color32::from_rgb(220, 100, 100)
+        } else {
+            Color32::from_rgb(170, 0, 0)
+        }
+    } else {
+        Color32::GRAY
     }
 }
 
