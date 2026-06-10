@@ -4,8 +4,8 @@ mod chess;
 mod engine;
 mod ui;
 
-use std::sync::Arc;
 use app::ChessyApp;
+use std::sync::Arc;
 
 fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
