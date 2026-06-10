@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform_label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            platform_label: linux-x86_64
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            platform_label: macos-arm64
+
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+            platform_label: macos-x86_64
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            platform_label: windows-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install Linux dependencies
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev \
+            libasound2-dev
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create README.txt
+        shell: bash
+        run: |
+          cat > README.txt << 'EOF'
+          Chessy - Chess GUI
+          ==================
+
+          Chessy requires the Stockfish chess engine to be installed separately.
+
+          Installing Stockfish:
+            Linux:   sudo apt install stockfish
+            macOS:   brew install stockfish
+            Windows: Download from https://stockfishchess.org/download/
+                     Place stockfish.exe somewhere in your PATH, or configure
+                     the path via Engine > Settings inside the app.
+
+          macOS note:
+            If macOS blocks the app, run in Terminal:
+              xattr -d com.apple.quarantine chessy
+
+          Usage:
+            Run the chessy binary from inside the extracted folder.
+            The assets/ directory must remain alongside the binary.
+          EOF
+
+      - name: Package (Linux / macOS)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE_NAME="chessy-${VERSION}-${{ matrix.platform_label }}"
+          mkdir -p "${ARCHIVE_NAME}"
+          cp "target/${{ matrix.target }}/release/chessy" "${ARCHIVE_NAME}/"
+          cp -r assets/ "${ARCHIVE_NAME}/assets/"
+          cp README.txt "${ARCHIVE_NAME}/"
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}/"
+          echo "ASSET=${ARCHIVE_NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ github.ref_name }}"
+          $ARCHIVE_NAME = "chessy-${VERSION}-${{ matrix.platform_label }}"
+          New-Item -ItemType Directory -Force -Path $ARCHIVE_NAME | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\chessy.exe" "$ARCHIVE_NAME\"
+          Copy-Item -Recurse "assets\" "$ARCHIVE_NAME\assets\"
+          Copy-Item "README.txt" "$ARCHIVE_NAME\"
+          Compress-Archive -Path "$ARCHIVE_NAME\*" -DestinationPath "${ARCHIVE_NAME}.zip"
+          echo "ASSET=${ARCHIVE_NAME}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chessy-${{ matrix.platform_label }}
+          path: ${{ env.ASSET }}
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Chessy ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `chessy-${{ github.ref_name }}-linux-x86_64.tar.gz` |
+            | macOS Apple Silicon | `chessy-${{ github.ref_name }}-macos-arm64.tar.gz` |
+            | macOS Intel | `chessy-${{ github.ref_name }}-macos-x86_64.tar.gz` |
+            | Windows x86_64 | `chessy-${{ github.ref_name }}-windows-x86_64.zip` |
+
+            ## Requirements
+
+            [Stockfish](https://stockfishchess.org/download/) must be installed separately.
+
+            **macOS**: If blocked by quarantine, run `xattr -d com.apple.quarantine chessy`
+
+            ## Installation
+
+            Extract the archive and run `chessy` (or `chessy.exe`) from inside the extracted folder.
+          files: artifacts/*
