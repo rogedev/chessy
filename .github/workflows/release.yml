@@ -27,7 +27,7 @@ jobs:
             platform_label: macos-arm64
 
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             archive: tar.gz
             platform_label: macos-x86_64
 
