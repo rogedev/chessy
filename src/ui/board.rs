@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, TextureHandle, Ui, Vec2};
 use resvg::{tiny_skia, usvg};
-use shakmaty::{Chess, Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square};
+use shakmaty::{
+    Board, Chess, Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square,
+};
 
 use crate::audio::SoundEvent;
 use crate::chess::Game;
@@ -170,7 +172,7 @@ impl<'a> BoardWidget<'a> {
         for rank_idx in 0..8u32 {
             for file_idx in 0..8u32 {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
-                let sq_rect = self.sq_to_rect(sq, rect, sq_size);
+                let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
                 let is_light_sq = (rank_idx + file_idx) % 2 == 0;
                 let sq_color = if self.dark_theme {
@@ -285,17 +287,96 @@ impl<'a> BoardWidget<'a> {
 
         pending_sound
     }
+}
 
-    fn sq_to_rect(&self, sq: Square, board_rect: Rect, sq_size: f32) -> Rect {
-        let (file_idx, rank_idx) = (sq.file().to_u32(), sq.rank().to_u32());
-        let (display_file, display_rank) = if self.flipped {
-            (7 - file_idx, rank_idx)
-        } else {
-            (file_idx, 7 - rank_idx)
-        };
-        let x = board_rect.min.x + display_file as f32 * sq_size;
-        let y = board_rect.min.y + display_rank as f32 * sq_size;
-        Rect::from_min_size(Pos2::new(x, y), Vec2::splat(sq_size))
+fn sq_to_rect(sq: Square, board_rect: Rect, sq_size: f32, flipped: bool) -> Rect {
+    let (file_idx, rank_idx) = (sq.file().to_u32(), sq.rank().to_u32());
+    let (display_file, display_rank) = if flipped {
+        (7 - file_idx, rank_idx)
+    } else {
+        (file_idx, 7 - rank_idx)
+    };
+    let x = board_rect.min.x + display_file as f32 * sq_size;
+    let y = board_rect.min.y + display_rank as f32 * sq_size;
+    Rect::from_min_size(Pos2::new(x, y), Vec2::splat(sq_size))
+}
+
+pub struct SetupBoardWidget<'a> {
+    board: &'a mut Board,
+    flipped: bool,
+    dark_theme: bool,
+    palette: Option<Piece>,
+    piece_textures: &'a PieceTextures,
+}
+
+impl<'a> SetupBoardWidget<'a> {
+    pub fn new(
+        board: &'a mut Board,
+        flipped: bool,
+        dark_theme: bool,
+        palette: Option<Piece>,
+        piece_textures: &'a PieceTextures,
+    ) -> Self {
+        Self {
+            board,
+            flipped,
+            dark_theme,
+            palette,
+            piece_textures,
+        }
+    }
+
+    pub fn show(self, ui: &mut Ui) {
+        let available = ui.available_size();
+        let board_size = available.x.min(available.y);
+        let sq_size = board_size / 8.0;
+
+        let (response, painter) =
+            ui.allocate_painter(Vec2::splat(board_size), Sense::click_and_drag());
+        let rect = response.rect;
+
+        for rank_idx in 0..8u32 {
+            for file_idx in 0..8u32 {
+                let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
+                let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
+
+                let is_light_sq = (rank_idx + file_idx) % 2 == 0;
+                let sq_color = if self.dark_theme {
+                    if is_light_sq {
+                        DARK_SQ_DARK
+                    } else {
+                        DARK_SQ_LIGHT
+                    }
+                } else if is_light_sq {
+                    LIGHT_SQ_LIGHT
+                } else {
+                    LIGHT_SQ_DARK
+                };
+
+                painter.rect_filled(sq_rect, 0.0, sq_color);
+
+                if let Some(piece) = self.board.piece_at(sq) {
+                    draw_piece(&painter, sq_rect, self.piece_textures.get(piece));
+                }
+            }
+        }
+
+        draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
+
+        if response.secondary_clicked()
+            && let Some(ptr) = response.interact_pointer_pos()
+            && let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped)
+        {
+            self.board.discard_piece_at(sq);
+        } else if response.clicked()
+            && let Some(ptr) = response.interact_pointer_pos()
+            && let Some(sq) = pos_to_sq(ptr, rect, sq_size, self.flipped)
+        {
+            match self.palette {
+                Some(piece) => self.board.set_piece_at(sq, piece),
+                None => self.board.discard_piece_at(sq),
+            }
+        }
     }
 }
 
@@ -519,6 +600,19 @@ mod tests {
         let rect = board_rect();
         assert_eq!(pos_to_sq(Pos2::new(850.0, 50.0), rect, 100.0, false), None);
         assert_eq!(pos_to_sq(Pos2::new(-10.0, 50.0), rect, 100.0, false), None);
+    }
+
+    #[test]
+    fn setup_board_stamps_and_erases_pieces() {
+        let mut board = Board::empty();
+        let piece = Piece {
+            color: PieceColor::White,
+            role: Role::Queen,
+        };
+        board.set_piece_at(Square::D4, piece);
+        assert_eq!(board.piece_at(Square::D4), Some(piece));
+        board.discard_piece_at(Square::D4);
+        assert_eq!(board.piece_at(Square::D4), None);
     }
 
     #[test]
