@@ -30,13 +30,17 @@ impl Game {
     pub fn from_fen(fen_str: &str) -> anyhow::Result<Self> {
         let fen: Fen = fen_str.parse()?;
         let pos: Chess = fen.into_position(CastlingMode::Standard)?;
-        Ok(Self {
+        Ok(Self::from_position(pos))
+    }
+
+    pub fn from_position(pos: Chess) -> Self {
+        Self {
             positions: vec![pos],
             moves: vec![],
             san: vec![],
             cursor: 0,
             headers: default_headers(),
-        })
+        }
     }
 
     pub fn current_position(&self) -> &Chess {

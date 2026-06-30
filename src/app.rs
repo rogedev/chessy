@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use egui::{Color32, Context, FontId, Key, RichText, Ui};
-use shakmaty::{Color as PieceColor, Position, Role};
+use shakmaty::{
+    Bitboard, Board, CastlingMode, Color as PieceColor, Piece, Position, Role, Setup, Square,
+};
 
 use crate::{
     audio::AudioPlayer,
@@ -11,8 +13,8 @@ use crate::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
         board::{
-            BoardInteraction, BoardWidget, PieceTextures, available_piece_sets, sound_for_move,
-            try_make_promotion_move,
+            BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
+            sound_for_move, try_make_promotion_move,
         },
         moves::show_moves_panel,
     },
@@ -30,6 +32,7 @@ const SKILL_PRESETS: &[(&str, u32)] = &[
 pub enum AppMode {
     Play,
     Analyze,
+    Setup,
 }
 
 pub struct ChessyApp {
@@ -49,6 +52,10 @@ pub struct ChessyApp {
     show_about: bool,
     piece_textures: PieceTextures,
     audio: Option<AudioPlayer>,
+    setup_board: Board,
+    setup_turn: PieceColor,
+    setup_palette: Option<Piece>,
+    setup_error: Option<String>,
 }
 
 impl ChessyApp {
@@ -75,6 +82,10 @@ impl ChessyApp {
             show_about: false,
             piece_textures,
             audio: AudioPlayer::new(),
+            setup_board: Board::empty(),
+            setup_turn: PieceColor::White,
+            setup_palette: None,
+            setup_error: None,
         };
         app.start_analysis();
         app
@@ -204,6 +215,34 @@ impl ChessyApp {
             self.mode = AppMode::Analyze;
         }
         self.start_analysis();
+    }
+
+    fn enter_setup(&mut self) {
+        let pos = self.game.current_position();
+        self.setup_board = pos.board().clone();
+        self.setup_turn = pos.turn();
+        self.setup_palette = None;
+        self.setup_error = None;
+        self.engine_lines.clear();
+        self.mode = AppMode::Setup;
+    }
+
+    fn analyze_setup_position(&mut self) {
+        let mut setup = Setup::empty();
+        setup.board = self.setup_board.clone();
+        setup.turn = self.setup_turn;
+        setup.castling_rights = infer_castling(&self.setup_board);
+
+        match setup.position::<shakmaty::Chess>(CastlingMode::Standard) {
+            Ok(pos) => {
+                self.setup_error = None;
+                self.load_game(Game::from_position(pos), true);
+            }
+
+            Err(e) => {
+                self.setup_error = Some(format!("Invalid position: {e}"));
+            }
+        }
     }
 
     fn open_pgn(&mut self) {
@@ -339,6 +378,13 @@ impl ChessyApp {
                     self.engine_lines.clear();
                     ui.close();
                 }
+                if ui
+                    .selectable_label(self.mode == AppMode::Setup, "Set Up Position")
+                    .clicked()
+                {
+                    self.enter_setup();
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Play as White").clicked() {
                     self.player_color = PieceColor::White;
@@ -418,6 +464,7 @@ impl ChessyApp {
                 let mode_str = match self.mode {
                     AppMode::Analyze => "Analysis",
                     AppMode::Play => "Play",
+                    AppMode::Setup => "Setup",
                 };
                 ui.label(RichText::new(mode_str).small().color(Color32::GRAY));
             });
@@ -563,6 +610,105 @@ impl ChessyApp {
         self.show_about = open;
     }
 
+    fn show_setup_panel(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Set Up Position").strong());
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("Side to move").small().color(Color32::GRAY));
+
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.setup_turn == PieceColor::White, "White")
+                .clicked()
+            {
+                self.setup_turn = PieceColor::White;
+            }
+
+            if ui
+                .selectable_label(self.setup_turn == PieceColor::Black, "Black")
+                .clicked()
+            {
+                self.setup_turn = PieceColor::Black;
+            }
+        });
+
+        ui.add_space(8.0);
+
+        ui.label(
+            RichText::new("Click a piece, then a square")
+                .small()
+                .color(Color32::GRAY),
+        );
+
+        let roles = [
+            Role::King,
+            Role::Queen,
+            Role::Rook,
+            Role::Bishop,
+            Role::Knight,
+            Role::Pawn,
+        ];
+
+        for color in [PieceColor::White, PieceColor::Black] {
+            ui.horizontal(|ui| {
+                for role in roles {
+                    let piece = Piece { color, role };
+                    let selected = self.setup_palette == Some(piece);
+                    if let Some(tex) = self.piece_textures.get(piece) {
+                        let img = egui::Image::from_texture(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(30.0, 30.0),
+                        ));
+                        if ui
+                            .add(egui::Button::image(img).selected(selected))
+                            .clicked()
+                        {
+                            self.setup_palette = Some(piece);
+                        }
+                    }
+                }
+            });
+        }
+
+        ui.add_space(4.0);
+
+        if ui
+            .selectable_label(self.setup_palette.is_none(), "Erase (or right-click)")
+            .clicked()
+        {
+            self.setup_palette = None;
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            if ui.button("Clear board").clicked() {
+                self.setup_board = Board::empty();
+                self.setup_error = None;
+            }
+            if ui.button("Start position").clicked() {
+                self.setup_board = Board::new();
+                self.setup_turn = PieceColor::White;
+                self.setup_error = None;
+            }
+        });
+
+        ui.add_space(6.0);
+
+        if ui
+            .button(RichText::new("Analyze Position").strong())
+            .clicked()
+        {
+            self.analyze_setup_position();
+        }
+
+        if let Some(err) = &self.setup_error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(err).color(Color32::from_rgb(220, 80, 80)));
+        }
+    }
+
     fn show_promotion_dialog(&mut self, ctx: &Context) {
         let Some((from, to)) = self.interaction.pending_promotion else {
             return;
@@ -665,6 +811,11 @@ impl eframe::App for ChessyApp {
 
                 ui.add_space(4.0);
 
+                if self.mode == AppMode::Setup {
+                    self.show_setup_panel(ui);
+                    return;
+                }
+
                 // Game info
                 let white = self
                     .game
@@ -748,8 +899,10 @@ impl eframe::App for ChessyApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(bg_color))
             .show_inside(ui, |ui| {
-                // Status message
-                if let Some(outcome) = self.game.outcome_string() {
+                // Status message (not shown while editing a position)
+                if self.mode != AppMode::Setup
+                    && let Some(outcome) = self.game.outcome_string()
+                {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(outcome)
@@ -760,15 +913,31 @@ impl eframe::App for ChessyApp {
                     });
                 }
 
-                let is_interactive = match self.mode {
-                    AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
-                };
-
                 let available = ui.available_rect_before_wrap();
                 let board_size = available.width().min(available.height());
                 let board_rect =
                     egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
+
+                if self.mode == AppMode::Setup {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
+                        SetupBoardWidget::new(
+                            &mut self.setup_board,
+                            self.flipped,
+                            self.settings.dark_theme,
+                            self.setup_palette,
+                            &self.piece_textures,
+                        )
+                        .show(ui);
+                    });
+
+                    return;
+                }
+
+                let is_interactive = match self.mode {
+                    AppMode::Analyze => true,
+                    AppMode::Play => !self.waiting_for_bestmove,
+                    AppMode::Setup => unreachable!(),
+                };
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
                     if let Some(event) = BoardWidget::new(
@@ -794,6 +963,31 @@ impl eframe::App for ChessyApp {
     }
 }
 
+fn infer_castling(board: &Board) -> Bitboard {
+    let mut rights = Bitboard::EMPTY;
+    let has = |sq: Square, color: PieceColor, role: Role| {
+        board.piece_at(sq) == Some(Piece { color, role })
+    };
+
+    if has(Square::E1, PieceColor::White, Role::King) {
+        for corner in [Square::A1, Square::H1] {
+            if has(corner, PieceColor::White, Role::Rook) {
+                rights |= Bitboard::from_square(corner);
+            }
+        }
+    }
+
+    if has(Square::E8, PieceColor::Black, Role::King) {
+        for corner in [Square::A8, Square::H8] {
+            if has(corner, PieceColor::Black, Role::Rook) {
+                rights |= Bitboard::from_square(corner);
+            }
+        }
+    }
+
+    rights
+}
+
 fn apply_theme(ctx: &Context, dark: bool) {
     if dark {
         ctx.set_visuals(egui::Visuals::dark());
@@ -808,6 +1002,64 @@ mod tests {
 
     const ELO_MIN: u32 = 800;
     const ELO_MAX: u32 = 3200;
+
+    fn build_setup(board: Board, turn: PieceColor) -> Result<shakmaty::Chess, String> {
+        let mut setup = Setup::empty();
+        setup.castling_rights = infer_castling(&board);
+        setup.board = board;
+        setup.turn = turn;
+        setup
+            .position::<shakmaty::Chess>(CastlingMode::Standard)
+            .map_err(|e| e.to_string())
+    }
+
+    fn place(board: &mut Board, sq: Square, color: PieceColor, role: Role) {
+        board.set_piece_at(sq, Piece { color, role });
+    }
+
+    #[test]
+    fn infer_castling_only_when_king_and_rooks_home() {
+        // Standard starting board grants all four rights.
+        assert_eq!(infer_castling(&Board::new()), Bitboard::CORNERS);
+
+        // King home but only one rook present -> only that corner.
+        let mut board = Board::empty();
+        place(&mut board, Square::E1, PieceColor::White, Role::King);
+        place(&mut board, Square::H1, PieceColor::White, Role::Rook);
+        assert_eq!(infer_castling(&board), Bitboard::from_square(Square::H1));
+
+        // King off its home square -> no rights even with rooks in corners.
+        let mut board = Board::empty();
+        place(&mut board, Square::G1, PieceColor::White, Role::King);
+        place(&mut board, Square::A1, PieceColor::White, Role::Rook);
+        place(&mut board, Square::H1, PieceColor::White, Role::Rook);
+        assert_eq!(infer_castling(&board), Bitboard::EMPTY);
+    }
+
+    #[test]
+    fn build_setup_accepts_legal_position() {
+        let mut board = Board::empty();
+        place(&mut board, Square::E1, PieceColor::White, Role::King);
+        place(&mut board, Square::E8, PieceColor::Black, Role::King);
+        place(&mut board, Square::D1, PieceColor::White, Role::Queen);
+        assert!(build_setup(board, PieceColor::White).is_ok());
+    }
+
+    #[test]
+    fn build_setup_rejects_missing_king() {
+        let mut board = Board::empty();
+        place(&mut board, Square::E8, PieceColor::Black, Role::King);
+        assert!(build_setup(board, PieceColor::White).is_err());
+    }
+
+    #[test]
+    fn build_setup_rejects_pawn_on_back_rank() {
+        let mut board = Board::empty();
+        place(&mut board, Square::E1, PieceColor::White, Role::King);
+        place(&mut board, Square::E8, PieceColor::Black, Role::King);
+        place(&mut board, Square::A8, PieceColor::White, Role::Pawn);
+        assert!(build_setup(board, PieceColor::White).is_err());
+    }
 
     #[test]
     fn skill_presets_all_within_slider_range() {
