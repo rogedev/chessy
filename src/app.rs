@@ -20,6 +20,13 @@ use crate::{
     },
 };
 
+const SHORTCUT_NEW_GAME: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::N);
+const SHORTCUT_OPEN_PGN: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::O);
+const SHORTCUT_SAVE_PGN: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S);
+
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
     ("Casual", 1200),
@@ -290,6 +297,26 @@ impl ChessyApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &Context) {
+        let (new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&SHORTCUT_NEW_GAME),
+                i.consume_shortcut(&SHORTCUT_OPEN_PGN),
+                i.consume_shortcut(&SHORTCUT_SAVE_PGN),
+            )
+        });
+
+        if new_game {
+            self.new_game();
+        }
+
+        if open_pgn {
+            self.open_pgn();
+        }
+
+        if save_pgn {
+            self.save_pgn();
+        }
+
         ctx.input(|i| {
             if i.key_pressed(Key::ArrowLeft) {
                 self.game.go_back();
@@ -334,33 +361,47 @@ impl ChessyApp {
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let menu_item = |ui: &mut Ui, label: &str, shortcut: Option<&egui::KeyboardShortcut>| {
+            let mut button = egui::Button::new(label);
+            if let Some(shortcut) = shortcut {
+                button = button.shortcut_text(ctx.format_shortcut(shortcut));
+            }
+            ui.add(button).clicked()
+        };
+
+        let section = |ui: &mut Ui, label: &str| {
+            ui.label(RichText::new(label).small().color(Color32::GRAY));
+        };
+
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New Game").clicked() {
+                if menu_item(ui, "New Game", Some(&SHORTCUT_NEW_GAME)) {
                     self.new_game();
                     ui.close();
                 }
-                if ui.button("Open PGN…").clicked() {
+                ui.separator();
+                if menu_item(ui, "Open PGN…", Some(&SHORTCUT_OPEN_PGN)) {
                     self.open_pgn();
                     ui.close();
                 }
-                if ui.button("Save PGN…").clicked() {
+                if menu_item(ui, "Save PGN…", Some(&SHORTCUT_SAVE_PGN)) {
                     self.save_pgn();
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Paste FEN / PGN").clicked() {
-                    self.paste_fen();
+                if menu_item(ui, "Copy FEN", None) {
+                    self.copy_fen();
                     ui.close();
                 }
-                if ui.button("Copy FEN").clicked() {
-                    self.copy_fen();
+                if menu_item(ui, "Paste FEN / PGN", None) {
+                    self.paste_fen();
                     ui.close();
                 }
             });
 
             ui.menu_button("Game", |ui| {
-                ui.label(RichText::new("Mode").small().color(Color32::GRAY));
+                section(ui, "Mode");
                 if ui
                     .selectable_label(self.mode == AppMode::Analyze, "Analyze")
                     .clicked()
@@ -386,12 +427,19 @@ impl ChessyApp {
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Play as White").clicked() {
+                section(ui, "Play as");
+                if ui
+                    .selectable_label(self.player_color == PieceColor::White, "White")
+                    .clicked()
+                {
                     self.player_color = PieceColor::White;
                     self.flipped = false;
                     ui.close();
                 }
-                if ui.button("Play as Black").clicked() {
+                if ui
+                    .selectable_label(self.player_color == PieceColor::Black, "Black")
+                    .clicked()
+                {
                     self.player_color = PieceColor::Black;
                     self.flipped = true;
                     ui.close();
@@ -399,13 +447,17 @@ impl ChessyApp {
             });
 
             ui.menu_button("View", |ui| {
-                if ui.button("Flip Board  [F]").clicked() {
+                if ui
+                    .add(egui::Button::new("Flip Board").shortcut_text("F"))
+                    .clicked()
+                {
                     self.flipped = !self.flipped;
                     ui.close();
                 }
                 ui.separator();
+                section(ui, "Theme");
                 if ui
-                    .selectable_label(self.settings.dark_theme, "Dark Theme")
+                    .selectable_label(self.settings.dark_theme, "Dark")
                     .clicked()
                 {
                     self.settings.dark_theme = true;
@@ -414,7 +466,7 @@ impl ChessyApp {
                     ui.close();
                 }
                 if ui
-                    .selectable_label(!self.settings.dark_theme, "Light Theme")
+                    .selectable_label(!self.settings.dark_theme, "Light")
                     .clicked()
                 {
                     self.settings.dark_theme = false;
@@ -425,48 +477,73 @@ impl ChessyApp {
             });
 
             ui.menu_button("Engine", |ui| {
-                if ui.button("Settings…").clicked() {
+                if menu_item(ui, "Settings…", None) {
                     self.show_settings = true;
                     ui.close();
                 }
                 ui.separator();
-                let engine_status = if self.engine.is_some() {
+                let (dot_color, engine_status) = if self.engine.is_some() {
                     if self.engine_running {
-                        "Running"
+                        (Color32::from_rgb(230, 180, 40), "Analyzing")
                     } else {
-                        "Ready"
+                        (Color32::from_rgb(70, 180, 70), "Ready")
                     }
                 } else {
-                    "Not connected"
+                    (Color32::from_rgb(200, 60, 60), "Not connected")
                 };
-                ui.label(
-                    RichText::new(format!("Status: {}", engine_status))
-                        .small()
-                        .color(Color32::GRAY),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("●").small().color(dot_color));
+                    ui.label(RichText::new(engine_status).small().color(Color32::GRAY));
+                });
+
+                if self.engine.is_none() {
+                    ui.label(
+                        RichText::new("Set the Stockfish path in Settings")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                }
             });
 
             ui.menu_button("Help", |ui| {
-                if ui.button("About").clicked() {
+                if menu_item(ui, "About Chessy", None) {
                     self.show_about = true;
                     ui.close();
                 }
                 ui.separator();
+                section(ui, "Shortcuts");
                 ui.label(
-                    RichText::new("← → navigate  F flip  Home/End")
+                    RichText::new("← / →   navigate moves")
                         .small()
                         .color(Color32::GRAY),
                 );
+                ui.label(
+                    RichText::new("Home / End   start / end")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+
+                ui.label(RichText::new("F   flip board").small().color(Color32::GRAY));
             });
 
-            // Mode indicator on the right
+            // Mode + engine status indicator on the right
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mode_str = match self.mode {
                     AppMode::Analyze => "Analysis",
-                    AppMode::Play => "Play",
+                    AppMode::Play => match self.player_color {
+                        PieceColor::White => "Play · White",
+                        PieceColor::Black => "Play · Black",
+                    },
                     AppMode::Setup => "Setup",
                 };
                 ui.label(RichText::new(mode_str).small().color(Color32::GRAY));
+                if self.engine.is_none() {
+                    ui.label(
+                        RichText::new("engine offline")
+                            .small()
+                            .color(Color32::from_rgb(200, 60, 60)),
+                    );
+                }
             });
         });
     }

@@ -2,6 +2,7 @@ mod app;
 mod audio;
 mod chess;
 mod engine;
+mod paths;
 mod ui;
 
 use app::ChessyApp;
@@ -31,7 +32,7 @@ fn main() -> eframe::Result<()> {
 
 fn load_icon() -> Option<egui::IconData> {
     use resvg::{tiny_skia, usvg};
-    let svg_data = std::fs::read("assets/icon.svg").ok()?;
+    let svg_data = std::fs::read(paths::asset_path("icon.svg")).ok()?;
     let opts = usvg::Options::default();
     let tree = usvg::Tree::from_data(&svg_data, &opts).ok()?;
     let size = 256u32;

@@ -33,7 +33,7 @@ impl PieceTextures {
         let handles = PIECE_NAMES
             .iter()
             .filter_map(|&(name, color, role)| {
-                let path = format!("assets/pieces/{}/{}.svg", set_name, name);
+                let path = crate::paths::asset_path(&format!("pieces/{}/{}.svg", set_name, name));
                 let bytes = std::fs::read(path).ok()?;
                 let handle = rasterize_svg(ctx, name, &bytes, 256)?;
                 Some(((color, role), handle))
@@ -48,7 +48,7 @@ impl PieceTextures {
 }
 
 pub fn available_piece_sets() -> Vec<String> {
-    let mut sets: Vec<String> = std::fs::read_dir("assets/pieces")
+    let mut sets: Vec<String> = std::fs::read_dir(crate::paths::asset_path("pieces"))
         .into_iter()
         .flatten()
         .flatten()

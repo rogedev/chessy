@@ -18,8 +18,8 @@ pub struct AudioPlayer {
 impl AudioPlayer {
     pub fn new() -> Option<Self> {
         let (stream, stream_handle) = OutputStream::try_default().ok()?;
-        let base = "assets/audio";
-        let load = |name: &str| std::fs::read(format!("{base}/{name}")).unwrap_or_default();
+        let base = crate::paths::asset_path("audio");
+        let load = |name: &str| std::fs::read(base.join(name)).unwrap_or_default();
         Some(Self {
             _stream: stream,
             stream_handle,
