@@ -88,6 +88,7 @@ const HIGHLIGHT_LAST: Color32 = Color32::from_rgba_premultiplied(255, 255, 0, 80
 const HIGHLIGHT_SELECTED: Color32 = Color32::from_rgba_premultiplied(20, 85, 30, 120);
 const HIGHLIGHT_LEGAL: Color32 = Color32::from_rgba_premultiplied(20, 85, 30, 80);
 const HIGHLIGHT_CHECK: Color32 = Color32::from_rgba_premultiplied(220, 0, 0, 120);
+const HIGHLIGHT_HINT: Color32 = Color32::from_rgba_premultiplied(40, 110, 220, 150);
 
 /// Mutable board interaction state shared between the app and the widget.
 #[derive(Default)]
@@ -105,6 +106,7 @@ pub struct BoardWidget<'a> {
     interactive: bool,
     interaction: &'a mut BoardInteraction,
     piece_textures: &'a PieceTextures,
+    hint: Option<(Square, Square)>,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -123,7 +125,14 @@ impl<'a> BoardWidget<'a> {
             interactive,
             interaction,
             piece_textures,
+            hint: None,
         }
+    }
+
+    /// Highlight the from and to squares of a suggested move.
+    pub fn with_hint(mut self, hint: Option<(Square, Square)>) -> Self {
+        self.hint = hint;
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> Option<SoundEvent> {
@@ -194,6 +203,9 @@ impl<'a> BoardWidget<'a> {
                 }
                 if check_sq == Some(sq) {
                     painter.rect_filled(sq_rect, 0.0, HIGHLIGHT_CHECK);
+                }
+                if self.hint.is_some_and(|(from, to)| sq == from || sq == to) {
+                    painter.rect_filled(sq_rect, 0.0, HIGHLIGHT_HINT);
                 }
                 if self.interaction.selected == Some(sq) {
                     painter.rect_filled(sq_rect, 0.0, HIGHLIGHT_SELECTED);

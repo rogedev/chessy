@@ -97,6 +97,22 @@ impl Game {
         Ok(())
     }
 
+    /// Remove the last `plies` moves of the game and show the new last
+    /// position. Removes everything if the game is shorter than that.
+    pub fn take_back(&mut self, plies: usize) {
+        let keep = self.moves.len().saturating_sub(plies);
+        self.moves.truncate(keep);
+        self.san.truncate(keep);
+        self.positions.truncate(keep + 1);
+        self.cursor = keep;
+    }
+
+    /// Drop every move after the one currently shown, so the displayed
+    /// position becomes the end of the game.
+    pub fn truncate_to_cursor(&mut self) {
+        self.take_back(self.moves.len() - self.cursor);
+    }
+
     /// Returns UCI move strings for positions[0..cursor].
     pub fn uci_moves_to_cursor(&self) -> Vec<String> {
         self.moves[..self.cursor]
@@ -367,5 +383,36 @@ mod tests {
         g.make_uci_move("c7c5").expect("legal");
         let pgn = g.to_pgn();
         assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+
+    #[test]
+    fn take_back_removes_moves_from_the_end() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.go_to(1); // viewing an earlier move does not matter
+        g.take_back(2);
+        assert_eq!(g.san, vec!["e4", "e5"]);
+        assert_eq!(g.positions.len(), 3);
+        assert_eq!(g.cursor, 2);
+        assert!(g.at_end());
+
+        g.take_back(5); // more than there are
+        assert!(g.moves.is_empty());
+        assert_eq!(g.positions.len(), 1);
+        assert_eq!(g.cursor, 0);
+        assert_eq!(g.current_fen(), START_FEN);
+    }
+
+    #[test]
+    fn truncate_to_cursor_makes_shown_position_the_end() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.go_to(1);
+        g.truncate_to_cursor();
+        assert_eq!(g.san, vec!["e4"]);
+        assert_eq!(g.cursor, 1);
+        assert!(g.at_end());
+
+        // Already at the end: nothing changes.
+        g.truncate_to_cursor();
+        assert_eq!(g.san, vec!["e4"]);
     }
 }
