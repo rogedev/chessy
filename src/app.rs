@@ -17,6 +17,7 @@ use crate::{
             sound_for_move, try_make_promotion_move,
         },
         moves::show_moves_panel,
+        picker::show_game_picker,
     },
 };
 
@@ -63,6 +64,12 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
+    /// Every game from the most recently opened PGN.
+    pgn_games: Vec<Game>,
+    /// Index into `pgn_games` of the game currently on the board.
+    pgn_current: Option<usize>,
+    pgn_filter: String,
+    show_game_picker: bool,
 }
 
 impl ChessyApp {
@@ -93,7 +100,19 @@ impl ChessyApp {
             setup_turn: PieceColor::White,
             setup_palette: None,
             setup_error: None,
+            pgn_games: vec![],
+            pgn_current: None,
+            pgn_filter: String::new(),
+            show_game_picker: false,
         };
+
+        // `chessy game.pgn` opens that file on launch.
+        if let Some(arg) = std::env::args().nth(1)
+            && let Ok(games) = pgn::load_pgn(Path::new(&arg))
+        {
+            app.open_games(games);
+        }
+
         app.start_analysis();
         app
     }
@@ -257,9 +276,28 @@ impl ChessyApp {
             .add_filter("PGN files", &["pgn"])
             .pick_file()
             && let Ok(games) = pgn::load_pgn(&path)
-            && let Some(first) = games.into_iter().next()
         {
-            self.load_game(first, true);
+            self.open_games(games);
+        }
+    }
+
+    /// Take ownership of a set of loaded games. The first one goes on the
+    /// board; when there are several, the picker opens so the user can choose.
+    fn open_games(&mut self, games: Vec<Game>) {
+        let Some(first) = games.first().cloned() else {
+            return;
+        };
+        self.show_game_picker = games.len() > 1;
+        self.pgn_filter.clear();
+        self.pgn_games = games;
+        self.pgn_current = Some(0);
+        self.load_game(first, true);
+    }
+
+    fn pick_game(&mut self, idx: usize) {
+        if let Some(game) = self.pgn_games.get(idx).cloned() {
+            self.pgn_current = Some(idx);
+            self.load_game(game, true);
         }
     }
 
@@ -285,8 +323,8 @@ impl ChessyApp {
         // analyze mode.
         if let Ok(game) = Game::from_fen(text) {
             self.load_game(game, false);
-        } else if let Some(game) = pgn::load_pgn_str(text).into_iter().next() {
-            self.load_game(game, true);
+        } else {
+            self.open_games(pgn::load_pgn_str(text));
         }
     }
 
@@ -387,6 +425,16 @@ impl ChessyApp {
                 }
                 if menu_item(ui, "Save PGN…", Some(&SHORTCUT_SAVE_PGN)) {
                     self.save_pgn();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.pgn_games.len() > 1,
+                        egui::Button::new(format!("Games in File ({})…", self.pgn_games.len())),
+                    )
+                    .clicked()
+                {
+                    self.show_game_picker = true;
                     ui.close();
                 }
                 ui.separator();
@@ -868,6 +916,18 @@ impl eframe::App for ChessyApp {
         }
         if self.interaction.pending_promotion.is_some() {
             self.show_promotion_dialog(&ctx);
+        }
+        if self.show_game_picker {
+            let picked = show_game_picker(
+                &ctx,
+                &self.pgn_games,
+                &mut self.pgn_filter,
+                &mut self.show_game_picker,
+                self.pgn_current,
+            );
+            if let Some(idx) = picked {
+                self.pick_game(idx);
+            }
         }
 
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
