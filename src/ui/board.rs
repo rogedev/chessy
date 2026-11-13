@@ -232,8 +232,10 @@ impl<'a> BoardWidget<'a> {
             draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
         }
 
+        // Moves may be made from any position of the game: playing one in
+        // the middle starts a variation. The caller decides when that is
+        // not wanted (for example while playing the engine).
         let can_interact = self.interactive
-            && self.game.at_end()
             && !self.game.is_game_over()
             && self.interaction.pending_promotion.is_none();
 
