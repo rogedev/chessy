@@ -77,12 +77,60 @@ fn rasterize_svg(
     Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
 }
 
-// Light theme
-const LIGHT_SQ_LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
-const LIGHT_SQ_DARK: Color32 = Color32::from_rgb(181, 136, 99);
-// Dark theme
-const DARK_SQ_LIGHT: Color32 = Color32::from_rgb(118, 150, 86);
-const DARK_SQ_DARK: Color32 = Color32::from_rgb(238, 238, 210);
+/// A named pair of square colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoardTheme {
+    pub name: &'static str,
+    pub light: Color32,
+    pub dark: Color32,
+}
+
+pub const BOARD_THEMES: &[BoardTheme] = &[
+    BoardTheme {
+        name: "Green",
+        light: Color32::from_rgb(238, 238, 210),
+        dark: Color32::from_rgb(118, 150, 86),
+    },
+    BoardTheme {
+        name: "Brown",
+        light: Color32::from_rgb(240, 217, 181),
+        dark: Color32::from_rgb(181, 136, 99),
+    },
+    BoardTheme {
+        name: "Blue",
+        light: Color32::from_rgb(222, 227, 230),
+        dark: Color32::from_rgb(140, 162, 173),
+    },
+    BoardTheme {
+        name: "Grey",
+        light: Color32::from_rgb(220, 220, 220),
+        dark: Color32::from_rgb(134, 134, 134),
+    },
+];
+
+impl BoardTheme {
+    /// Look a theme up by name. An empty or unknown name means "automatic":
+    /// green with the dark interface and brown with the light one, which is
+    /// how the board looked before themes were selectable.
+    pub fn resolve(name: &str, dark_ui: bool) -> BoardTheme {
+        BOARD_THEMES
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(name))
+            .copied()
+            .unwrap_or(BOARD_THEMES[if dark_ui { 0 } else { 1 }])
+    }
+
+    fn square(&self, is_light: bool) -> Color32 {
+        if is_light { self.light } else { self.dark }
+    }
+}
+
+/// How the board is drawn: colours and whether coordinates are shown.
+#[derive(Clone, Copy)]
+pub struct BoardStyle {
+    pub theme: BoardTheme,
+    pub show_coordinates: bool,
+}
 
 const HIGHLIGHT_LAST: Color32 = Color32::from_rgba_premultiplied(255, 255, 0, 80);
 const HIGHLIGHT_SELECTED: Color32 = Color32::from_rgba_premultiplied(20, 85, 30, 120);
@@ -101,7 +149,7 @@ pub struct BoardInteraction {
 pub struct BoardWidget<'a> {
     game: &'a mut Game,
     flipped: bool,
-    dark_theme: bool,
+    style: BoardStyle,
     interactive: bool,
     interaction: &'a mut BoardInteraction,
     piece_textures: &'a PieceTextures,
@@ -111,7 +159,7 @@ impl<'a> BoardWidget<'a> {
     pub fn new(
         game: &'a mut Game,
         flipped: bool,
-        dark_theme: bool,
+        style: BoardStyle,
         interactive: bool,
         interaction: &'a mut BoardInteraction,
         piece_textures: &'a PieceTextures,
@@ -119,7 +167,7 @@ impl<'a> BoardWidget<'a> {
         Self {
             game,
             flipped,
-            dark_theme,
+            style,
             interactive,
             interaction,
             piece_textures,
@@ -174,18 +222,9 @@ impl<'a> BoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                let is_light_sq = (rank_idx + file_idx) % 2 == 0;
-                let sq_color = if self.dark_theme {
-                    if is_light_sq {
-                        DARK_SQ_DARK
-                    } else {
-                        DARK_SQ_LIGHT
-                    }
-                } else if is_light_sq {
-                    LIGHT_SQ_LIGHT
-                } else {
-                    LIGHT_SQ_DARK
-                };
+                // a1 (0, 0) is a dark square, so odd coordinate sums are light.
+                let is_light_sq = (rank_idx + file_idx) % 2 == 1;
+                let sq_color = self.style.theme.square(is_light_sq);
                 painter.rect_filled(sq_rect, 0.0, sq_color);
 
                 // Highlight layers
@@ -221,7 +260,9 @@ impl<'a> BoardWidget<'a> {
         }
 
         // Draw rank/file labels
-        draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
+        if self.style.show_coordinates {
+            draw_labels(&painter, rect, sq_size, self.flipped, self.style.theme);
+        }
 
         // Draw dragged piece at cursor
         if let (Some(from_sq), Some(cursor_pos)) =
@@ -304,7 +345,7 @@ fn sq_to_rect(sq: Square, board_rect: Rect, sq_size: f32, flipped: bool) -> Rect
 pub struct SetupBoardWidget<'a> {
     board: &'a mut Board,
     flipped: bool,
-    dark_theme: bool,
+    style: BoardStyle,
     palette: Option<Piece>,
     piece_textures: &'a PieceTextures,
 }
@@ -313,14 +354,14 @@ impl<'a> SetupBoardWidget<'a> {
     pub fn new(
         board: &'a mut Board,
         flipped: bool,
-        dark_theme: bool,
+        style: BoardStyle,
         palette: Option<Piece>,
         piece_textures: &'a PieceTextures,
     ) -> Self {
         Self {
             board,
             flipped,
-            dark_theme,
+            style,
             palette,
             piece_textures,
         }
@@ -340,18 +381,9 @@ impl<'a> SetupBoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                let is_light_sq = (rank_idx + file_idx) % 2 == 0;
-                let sq_color = if self.dark_theme {
-                    if is_light_sq {
-                        DARK_SQ_DARK
-                    } else {
-                        DARK_SQ_LIGHT
-                    }
-                } else if is_light_sq {
-                    LIGHT_SQ_LIGHT
-                } else {
-                    LIGHT_SQ_DARK
-                };
+                // a1 (0, 0) is a dark square, so odd coordinate sums are light.
+                let is_light_sq = (rank_idx + file_idx) % 2 == 1;
+                let sq_color = self.style.theme.square(is_light_sq);
 
                 painter.rect_filled(sq_rect, 0.0, sq_color);
 
@@ -361,7 +393,9 @@ impl<'a> SetupBoardWidget<'a> {
             }
         }
 
-        draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
+        if self.style.show_coordinates {
+            draw_labels(&painter, rect, sq_size, self.flipped, self.style.theme);
+        }
 
         if response.secondary_clicked()
             && let Some(ptr) = response.interact_pointer_pos()
@@ -514,22 +548,27 @@ fn draw_piece(painter: &Painter, rect: Rect, texture: Option<&TextureHandle>) {
     }
 }
 
-fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool, dark_theme: bool) {
-    let label_color = if dark_theme {
-        Color32::from_rgb(180, 180, 180)
-    } else {
-        Color32::from_rgb(100, 100, 100)
-    };
-
+fn draw_labels(
+    painter: &Painter,
+    board_rect: Rect,
+    sq_size: f32,
+    flipped: bool,
+    theme: BoardTheme,
+) {
     let font = FontId::proportional(sq_size * 0.2);
 
     let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
     for i in 0..8 {
+        // Along the bottom row and the right column the squares alternate
+        // starting dark at index 0, whichever way the board faces. Each
+        // label takes the colour of the opposite square so it stays legible.
+        let label_color = theme.square(i % 2 == 0);
+
         let file_char = if flipped { files[7 - i] } else { files[i] };
         let x = board_rect.min.x + i as f32 * sq_size + sq_size * 0.05;
-        let y = board_rect.max.y - sq_size * 0.22;
+        let y = board_rect.max.y - sq_size * 0.14;
         painter.text(
             Pos2::new(x, y),
             Align2::LEFT_CENTER,
@@ -539,8 +578,8 @@ fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool,
         );
 
         let rank_char = if flipped { ranks[i] } else { ranks[7 - i] };
-        let x2 = board_rect.max.x - sq_size * 0.18;
-        let y2 = board_rect.min.y + i as f32 * sq_size + sq_size * 0.12;
+        let x2 = board_rect.max.x - sq_size * 0.1;
+        let y2 = board_rect.min.y + i as f32 * sq_size + sq_size * 0.05;
         painter.text(
             Pos2::new(x2, y2),
             Align2::CENTER_TOP,
@@ -739,5 +778,40 @@ mod tests {
         next.play_unchecked(m);
         assert!(next.is_stalemate(), "expected stalemate");
         assert!(matches!(sound_for_move(&m, &next), SoundEvent::Draw));
+    }
+
+    #[test]
+    fn board_theme_resolves_by_name_case_insensitively() {
+        assert_eq!(BoardTheme::resolve("Blue", true).name, "Blue");
+        assert_eq!(BoardTheme::resolve("blue", false).name, "Blue");
+        assert_eq!(BoardTheme::resolve("GREY", true).name, "Grey");
+    }
+
+    #[test]
+    fn board_theme_auto_follows_interface_theme() {
+        // Empty or unknown names keep the pre-existing look.
+        assert_eq!(BoardTheme::resolve("", true).name, "Green");
+        assert_eq!(BoardTheme::resolve("", false).name, "Brown");
+        assert_eq!(BoardTheme::resolve("no-such-theme", true).name, "Green");
+    }
+
+    #[test]
+    fn board_themes_have_unique_names_and_distinct_squares() {
+        let mut seen = std::collections::HashSet::new();
+        for theme in BOARD_THEMES {
+            assert!(seen.insert(theme.name), "duplicate theme {}", theme.name);
+            assert_ne!(
+                theme.light, theme.dark,
+                "{} has identical squares",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn theme_square_picks_light_or_dark() {
+        let t = BOARD_THEMES[0];
+        assert_eq!(t.square(true), t.light);
+        assert_eq!(t.square(false), t.dark);
     }
 }
