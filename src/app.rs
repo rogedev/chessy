@@ -7,7 +7,7 @@ use shakmaty::{
 
 use crate::{
     audio::AudioPlayer,
-    chess::{Game, pgn},
+    chess::{Game, openings::OpeningBook, pgn},
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
@@ -920,6 +920,21 @@ impl eframe::App for ChessyApp {
                     ui.label(RichText::new("♙ ").color(Color32::WHITE));
                     ui.label(RichText::new(white).color(text_col).strong());
                 });
+
+                if let Some(opening) = OpeningBook::builtin().lookup(&self.game) {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&opening.eco)
+                                .small()
+                                .strong()
+                                .color(Color32::from_rgb(220, 180, 50)),
+                        );
+                        ui.label(RichText::new(&opening.name).small().color(text_col));
+                    })
+                    .response
+                    .on_hover_text("Opening");
+                }
 
                 ui.separator();
 
