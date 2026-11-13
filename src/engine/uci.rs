@@ -56,6 +56,13 @@ impl UciClient {
                             multipv, ms
                         )
                     }
+                    EngineCmd::GoClock {
+                        wtime_ms,
+                        btime_ms,
+                        winc_ms,
+                        binc_ms,
+                        max_ms,
+                    } => go_clock_command(wtime_ms, btime_ms, winc_ms, binc_ms, max_ms),
                     EngineCmd::Stop => "stop".to_string(),
                     EngineCmd::SetOption { name, value } => {
                         format!("setoption name {} value {}", name, value)
@@ -127,6 +134,18 @@ impl UciClient {
         self.send(EngineCmd::GoMovetime { ms, multipv: 1 });
     }
 
+    /// Let the engine manage its own time from the clocks, but never think
+    /// longer than `max_ms` on one move.
+    pub fn go_clock(&self, wtime_ms: u64, btime_ms: u64, winc_ms: u64, binc_ms: u64, max_ms: u64) {
+        self.send(EngineCmd::GoClock {
+            wtime_ms,
+            btime_ms,
+            winc_ms,
+            binc_ms,
+            max_ms,
+        });
+    }
+
     pub fn stop(&self) {
         self.send(EngineCmd::Stop);
     }
@@ -148,6 +167,13 @@ impl UciClient {
             value: "false".to_string(),
         });
     }
+}
+
+fn go_clock_command(wtime: u64, btime: u64, winc: u64, binc: u64, max_ms: u64) -> String {
+    format!(
+        "setoption name MultiPV value 1\n\
+         go wtime {wtime} btime {btime} winc {winc} binc {binc} movetime {max_ms}"
+    )
 }
 
 fn parse_info(line: &str) -> Option<EngineInfo> {
@@ -257,5 +283,17 @@ mod tests {
     fn missing_score_defaults_to_zero_cp() {
         let info = parse_info("info depth 5 pv e2e4").expect("should parse");
         assert!(matches!(info.score, Score::Cp(0)));
+    }
+
+    #[test]
+    fn go_clock_command_lists_both_clocks_and_the_cap() {
+        let cmd = go_clock_command(300_000, 295_500, 2_000, 2_000, 2_000);
+        let mut lines = cmd.lines();
+        assert_eq!(lines.next(), Some("setoption name MultiPV value 1"));
+        assert_eq!(
+            lines.next(),
+            Some("go wtime 300000 btime 295500 winc 2000 binc 2000 movetime 2000")
+        );
+        assert_eq!(lines.next(), None);
     }
 }
