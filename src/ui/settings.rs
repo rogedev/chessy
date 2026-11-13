@@ -11,6 +11,9 @@ pub struct Settings {
     pub analysis_depth: u8,
     #[serde(default = "default_piece_set")]
     pub piece_set: String,
+    /// Slide pieces between squares instead of jumping.
+    #[serde(default = "default_animate_moves")]
+    pub animate_moves: bool,
 }
 
 impl Default for Settings {
@@ -24,6 +27,7 @@ impl Default for Settings {
             movetime_ms: 2000,
             analysis_depth: 20,
             piece_set: default_piece_set(),
+            animate_moves: default_animate_moves(),
         }
     }
 }
@@ -50,6 +54,10 @@ impl Settings {
 
 fn config_path() -> Option<std::path::PathBuf> {
     dirs_next::config_dir().map(|d| d.join("chessy").join("settings.json"))
+}
+
+fn default_animate_moves() -> bool {
+    true
 }
 
 fn default_piece_set() -> String {
@@ -95,6 +103,8 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.piece_set, "cburnett");
+        // Move animation, added later, is on by default.
+        assert!(s.animate_moves);
     }
 
     #[test]

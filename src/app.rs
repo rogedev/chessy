@@ -454,6 +454,15 @@ impl ChessyApp {
                     self.flipped = !self.flipped;
                     ui.close();
                 }
+                let mut animate = self.settings.animate_moves;
+                if ui
+                    .checkbox(&mut animate, "Animate Moves")
+                    .on_hover_text("Slide pieces between squares")
+                    .changed()
+                {
+                    self.settings.animate_moves = animate;
+                    self.settings.save();
+                }
                 ui.separator();
                 section(ui, "Theme");
                 if ui
@@ -1025,6 +1034,7 @@ impl eframe::App for ChessyApp {
                         &mut self.interaction,
                         &self.piece_textures,
                     )
+                    .with_animation(self.settings.animate_moves)
                     .show(ui)
                         && let Some(audio) = &self.audio
                     {
