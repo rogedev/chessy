@@ -6,6 +6,7 @@ use shakmaty::{
     Board, Chess, Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square,
 };
 
+use super::arrows::{self, Annotations};
 use crate::audio::SoundEvent;
 use crate::chess::Game;
 
@@ -96,6 +97,7 @@ pub struct BoardInteraction {
     pub drag_from: Option<Square>,
     pub drag_pos: Option<Pos2>,
     pub pending_promotion: Option<(Square, Square)>,
+    pub annotations: Annotations,
 }
 
 pub struct BoardWidget<'a> {
@@ -105,6 +107,7 @@ pub struct BoardWidget<'a> {
     interactive: bool,
     interaction: &'a mut BoardInteraction,
     piece_textures: &'a PieceTextures,
+    engine_arrow: Option<(Square, Square)>,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -123,7 +126,14 @@ impl<'a> BoardWidget<'a> {
             interactive,
             interaction,
             piece_textures,
+            engine_arrow: None,
         }
+    }
+
+    /// Draw an arrow for the engine's suggested move.
+    pub fn with_engine_arrow(mut self, arrow: Option<(Square, Square)>) -> Self {
+        self.engine_arrow = arrow;
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> Option<SoundEvent> {
@@ -223,6 +233,75 @@ impl<'a> BoardWidget<'a> {
         // Draw rank/file labels
         draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
 
+        // Arrows and highlights sit above the pieces.
+        let center = |sq: Square| sq_to_rect(sq, rect, sq_size, self.flipped).center();
+        self.interaction.annotations.sync(board);
+
+        if let Some((from, to)) = self.engine_arrow
+            // Ignore a stale suggestion left over from another position.
+            && board.piece_at(from).is_some_and(|p| p.color == pos.turn())
+        {
+            arrows::draw_arrow(
+                &painter,
+                center(from),
+                center(to),
+                sq_size,
+                arrows::ENGINE_COLOR,
+            );
+        }
+        for &sq in &self.interaction.annotations.squares {
+            arrows::draw_square_mark(&painter, center(sq), sq_size, arrows::USER_COLOR);
+        }
+        for &(from, to) in &self.interaction.annotations.arrows {
+            arrows::draw_arrow(
+                &painter,
+                center(from),
+                center(to),
+                sq_size,
+                arrows::USER_COLOR,
+            );
+        }
+
+        // Right button: drag to draw an arrow, click to mark a square.
+        // Available even when moves are not (engine thinking, game over).
+        let pointer_sq = ui
+            .input(|i| i.pointer.interact_pos())
+            .and_then(|p| pos_to_sq(p, rect, sq_size, self.flipped));
+        let secondary = egui::PointerButton::Secondary;
+
+        if response.drag_started_by(secondary) {
+            self.interaction.annotations.drag_start = ui
+                .input(|i| i.pointer.press_origin())
+                .and_then(|p| pos_to_sq(p, rect, sq_size, self.flipped));
+        }
+        if let Some(from) = self.interaction.annotations.drag_start {
+            if response.drag_stopped_by(secondary) {
+                self.interaction.annotations.drag_start = None;
+                if let Some(to) = pointer_sq {
+                    self.interaction.annotations.toggle(from, to, board);
+                }
+            } else if let Some(to) = pointer_sq {
+                // Preview while dragging.
+                arrows::draw_arrow(
+                    &painter,
+                    center(from),
+                    center(to),
+                    sq_size,
+                    arrows::USER_COLOR,
+                );
+            }
+        } else if response.secondary_clicked()
+            && let Some(sq) = pointer_sq
+        {
+            self.interaction.annotations.toggle(sq, sq, board);
+        }
+
+        // A left click or drag anywhere on the board clears annotations.
+        let primary = egui::PointerButton::Primary;
+        if response.clicked() || response.drag_started_by(primary) {
+            self.interaction.annotations.clear();
+        }
+
         // Draw dragged piece at cursor
         if let (Some(from_sq), Some(cursor_pos)) =
             (self.interaction.drag_from, self.interaction.drag_pos)
@@ -241,7 +320,7 @@ impl<'a> BoardWidget<'a> {
 
         if can_interact {
             // Update drag position
-            if response.dragged()
+            if response.dragged_by(primary)
                 && let Some(ptr) = response.interact_pointer_pos()
             {
                 self.interaction.drag_pos = Some(ptr);
@@ -256,7 +335,7 @@ impl<'a> BoardWidget<'a> {
                 }
             }
 
-            if response.drag_stopped() {
+            if response.drag_stopped_by(primary) {
                 if let (Some(from), Some(ptr)) =
                     (self.interaction.drag_from, self.interaction.drag_pos)
                     && let Some(to) = pos_to_sq(ptr, rect, sq_size, self.flipped)
