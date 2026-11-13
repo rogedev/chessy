@@ -210,6 +210,13 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
         }
     }
 
+    // Progress lines ("info depth 20 currmove ...", "info nodes ...") carry
+    // no line of play. Reporting them would overwrite the real first line
+    // with an empty one and a zero score.
+    if pv.is_empty() {
+        return None;
+    }
+
     Some(EngineInfo {
         depth,
         score: score.unwrap_or(Score::Cp(0)),
@@ -257,5 +264,12 @@ mod tests {
     fn missing_score_defaults_to_zero_cp() {
         let info = parse_info("info depth 5 pv e2e4").expect("should parse");
         assert!(matches!(info.score, Score::Cp(0)));
+    }
+
+    #[test]
+    fn ignores_progress_lines_without_a_pv() {
+        assert!(parse_info("info depth 20 currmove e2e4 currmovenumber 1").is_none());
+        assert!(parse_info("info nodes 120000 nps 1200000 hashfull 12 time 100").is_none());
+        assert!(parse_info("info string NNUE evaluation enabled").is_none());
     }
 }

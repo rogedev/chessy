@@ -12,6 +12,7 @@ use crate::{
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
+        arrows::uci_squares,
         board::{
             BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
             sound_for_move, try_make_promotion_move,
@@ -454,6 +455,15 @@ impl ChessyApp {
                     self.flipped = !self.flipped;
                     ui.close();
                 }
+                let mut engine_arrow = self.settings.engine_arrow;
+                if ui
+                    .checkbox(&mut engine_arrow, "Best-Move Arrow")
+                    .on_hover_text("Show the engine's first choice on the board while analyzing")
+                    .changed()
+                {
+                    self.settings.engine_arrow = engine_arrow;
+                    self.settings.save();
+                }
                 ui.separator();
                 section(ui, "Theme");
                 if ui
@@ -524,6 +534,16 @@ impl ChessyApp {
                 );
 
                 ui.label(RichText::new("F   flip board").small().color(Color32::GRAY));
+                ui.label(
+                    RichText::new("Right-drag   draw arrow")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.label(
+                    RichText::new("Right-click   mark square")
+                        .small()
+                        .color(Color32::GRAY),
+                );
             });
 
             // Mode + engine status indicator on the right
@@ -1016,6 +1036,13 @@ impl eframe::App for ChessyApp {
                     AppMode::Setup => unreachable!(),
                 };
 
+                // The engine's first choice, shown only while analyzing.
+                let engine_arrow = (self.mode == AppMode::Analyze && self.settings.engine_arrow)
+                    .then(|| self.engine_lines.first())
+                    .flatten()
+                    .and_then(|line| line.pv.first())
+                    .and_then(|uci| uci_squares(uci));
+
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
                     if let Some(event) = BoardWidget::new(
                         &mut self.game,
@@ -1025,6 +1052,7 @@ impl eframe::App for ChessyApp {
                         &mut self.interaction,
                         &self.piece_textures,
                     )
+                    .with_engine_arrow(engine_arrow)
                     .show(ui)
                         && let Some(audio) = &self.audio
                     {
