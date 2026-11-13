@@ -1,10 +1,16 @@
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::io::Cursor;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundEvent {
     Move,
     Capture,
     Draw,
+    /// The move delivered checkmate. The app turns this into `Victory` or
+    /// `Defeat` depending on who is playing.
+    Checkmate,
+    Victory,
+    Defeat,
 }
 
 pub struct AudioPlayer {
@@ -13,6 +19,8 @@ pub struct AudioPlayer {
     move_bytes: Vec<u8>,
     capture_bytes: Vec<u8>,
     draw_bytes: Vec<u8>,
+    victory_bytes: Vec<u8>,
+    defeat_bytes: Vec<u8>,
 }
 
 impl AudioPlayer {
@@ -26,6 +34,8 @@ impl AudioPlayer {
             move_bytes: load("Move.mp3"),
             capture_bytes: load("Capture.mp3"),
             draw_bytes: load("Draw.mp3"),
+            victory_bytes: load("Victory.mp3"),
+            defeat_bytes: load("Defeat.mp3"),
         })
     }
 
@@ -34,6 +44,8 @@ impl AudioPlayer {
             SoundEvent::Move => &self.move_bytes,
             SoundEvent::Capture => &self.capture_bytes,
             SoundEvent::Draw => &self.draw_bytes,
+            SoundEvent::Checkmate | SoundEvent::Victory => &self.victory_bytes,
+            SoundEvent::Defeat => &self.defeat_bytes,
         };
 
         if bytes.is_empty() {
