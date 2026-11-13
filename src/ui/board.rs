@@ -6,6 +6,7 @@ use shakmaty::{
     Board, Chess, Color as PieceColor, File, Move, Piece, Position, Rank, Role, Square,
 };
 
+use super::animation::MoveAnimator;
 use crate::audio::SoundEvent;
 use crate::chess::Game;
 
@@ -96,6 +97,7 @@ pub struct BoardInteraction {
     pub drag_from: Option<Square>,
     pub drag_pos: Option<Pos2>,
     pub pending_promotion: Option<(Square, Square)>,
+    pub animator: MoveAnimator,
 }
 
 pub struct BoardWidget<'a> {
@@ -105,6 +107,7 @@ pub struct BoardWidget<'a> {
     interactive: bool,
     interaction: &'a mut BoardInteraction,
     piece_textures: &'a PieceTextures,
+    animate: bool,
 }
 
 impl<'a> BoardWidget<'a> {
@@ -123,7 +126,14 @@ impl<'a> BoardWidget<'a> {
             interactive,
             interaction,
             piece_textures,
+            animate: true,
         }
+    }
+
+    /// Whether pieces slide between squares (on by default).
+    pub fn with_animation(mut self, animate: bool) -> Self {
+        self.animate = animate;
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> Option<SoundEvent> {
@@ -137,6 +147,11 @@ impl<'a> BoardWidget<'a> {
         let rect = response.rect;
         let pos = self.game.current_position();
         let board = pos.board();
+
+        let now = ui.input(|i| i.time);
+        self.interaction
+            .animator
+            .update(self.game, now, self.animate);
 
         // Legal moves from selected square
         let legal_dests: Vec<Square> = if let Some(from) = self.interaction.selected {
@@ -213,11 +228,25 @@ impl<'a> BoardWidget<'a> {
                 }
 
                 if self.interaction.drag_from != Some(sq)
+                    && !self.interaction.animator.hides(sq)
                     && let Some(piece) = board.piece_at(sq)
                 {
                     draw_piece(&painter, sq_rect, self.piece_textures.get(piece));
                 }
             }
+        }
+
+        // Pieces in motion, drawn above everything standing still.
+        for (slide, t) in self.interaction.animator.slides(now) {
+            if let Some(piece) = board.piece_at(slide.end) {
+                let start = sq_to_rect(slide.start, rect, sq_size, self.flipped);
+                let end = sq_to_rect(slide.end, rect, sq_size, self.flipped);
+                let moving = start.translate((end.min - start.min) * t);
+                draw_piece(&painter, moving, self.piece_textures.get(piece));
+            }
+        }
+        if self.interaction.animator.is_active() {
+            ui.ctx().request_repaint();
         }
 
         // Draw rank/file labels
@@ -265,6 +294,8 @@ impl<'a> BoardWidget<'a> {
                         self.interaction.pending_promotion = Some((from, to));
                     } else {
                         pending_sound = try_make_move(self.game, from, to);
+                        // The piece was carried to its square by hand.
+                        self.interaction.animator.skip_next = pending_sound.is_some();
                     }
                 }
                 self.interaction.drag_from = None;
