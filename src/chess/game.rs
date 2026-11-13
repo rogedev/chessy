@@ -154,10 +154,24 @@ impl Game {
             out.push_str(&format!("[{} \"{}\"]\n", key, val));
         }
 
-        for (k, v) in &self.headers {
-            if !header_order.contains(&k.as_str()) {
-                out.push_str(&format!("[{} \"{}\"]\n", k, v));
-            }
+        // Remaining tags in a stable order. FEN/SetUp are regenerated below
+        // from the real start position rather than trusted from the headers.
+        let mut extra: Vec<(&String, &String)> = self
+            .headers
+            .iter()
+            .filter(|(k, _)| {
+                !header_order.contains(&k.as_str()) && k.as_str() != "FEN" && k.as_str() != "SetUp"
+            })
+            .collect();
+        extra.sort();
+        for (k, v) in extra {
+            out.push_str(&format!("[{} \"{}\"]\n", k, v));
+        }
+
+        if self.positions[0] != Chess::default() {
+            let fen = Fen::from_position(&self.positions[0], EnPassantMode::Legal);
+            out.push_str("[SetUp \"1\"]\n");
+            out.push_str(&format!("[FEN \"{}\"]\n", fen));
         }
 
         out.push('\n');
@@ -165,22 +179,18 @@ impl Game {
         // Moves
         let start_color = self.positions[0].turn();
         let is_black_first = start_color == shakmaty::Color::Black;
+        let start_fullmove = self.positions[0].fullmoves().get() as usize;
 
         for (i, san_str) in self.san.iter().enumerate() {
-            let move_num = i / 2 + 1;
+            // Ply counted from White's first move, so a black-first game
+            // starts at ply 1 and numbers line up with the start position.
+            let ply = i + usize::from(is_black_first);
+            let move_num = start_fullmove + ply / 2;
 
-            if i == 0 {
-                if is_black_first {
-                    out.push_str(&format!("{}... ", move_num));
-                } else {
-                    out.push_str(&format!("{}. ", move_num));
-                }
-                out.push_str(san_str);
-                out.push(' ');
-            }
-
-            if i.is_multiple_of(2) {
+            if ply.is_multiple_of(2) {
                 out.push_str(&format!("{}. ", move_num));
+            } else if i == 0 {
+                out.push_str(&format!("{}... ", move_num));
             }
 
             out.push_str(san_str);
@@ -208,12 +218,36 @@ fn default_headers() -> HashMap<String, String> {
     let mut h = HashMap::new();
     h.insert("Event".to_string(), "?".to_string());
     h.insert("Site".to_string(), "?".to_string());
-    h.insert("Date".to_string(), "????.??.??".to_string());
+    h.insert("Date".to_string(), today_pgn_date());
     h.insert("Round".to_string(), "?".to_string());
     h.insert("White".to_string(), "?".to_string());
     h.insert("Black".to_string(), "?".to_string());
     h.insert("Result".to_string(), "*".to_string());
     h
+}
+
+/// Today's date (UTC) in PGN form, `YYYY.MM.DD`.
+fn today_pgn_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
+    format!("{y:04}.{m:02}.{d:02}")
+}
+
+/// Convert days since 1970-01-01 to a (year, month, day) Gregorian date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -367,5 +401,50 @@ mod tests {
         g.make_uci_move("c7c5").expect("legal");
         let pgn = g.to_pgn();
         assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+
+    #[test]
+    fn to_pgn_writes_each_move_exactly_once() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.headers.insert("Result".to_string(), "*".to_string());
+        let pgn = g.to_pgn();
+        let movetext = pgn.rsplit("\n\n").next().unwrap().trim();
+        assert_eq!(movetext, "1. e4 e5 2. Nf3 Nc6 *");
+    }
+
+    #[test]
+    fn to_pgn_black_first_numbers_from_start_position() {
+        // Black to move at move 12: numbering must continue from the FEN.
+        let fen = "4k3/8/8/8/8/8/8/4K2R b K - 0 12";
+        let mut g = Game::from_fen(fen).expect("valid fen");
+        g.make_uci_move("e8d8").expect("legal");
+        g.make_uci_move("e1g1").expect("legal");
+        g.make_uci_move("d8c8").expect("legal");
+        let pgn = g.to_pgn();
+        let movetext = pgn.rsplit("\n\n").next().unwrap().trim();
+        assert_eq!(movetext, "12... Kd8 13. O-O Kc8 *");
+        assert!(pgn.contains("[SetUp \"1\"]"));
+        assert!(pgn.contains(&format!("[FEN \"{fen}\"]")));
+    }
+
+    #[test]
+    fn to_pgn_standard_start_has_no_fen_tag() {
+        let g = game_from_uci(&["e2e4"]);
+        assert!(!g.to_pgn().contains("[FEN"));
+    }
+
+    #[test]
+    fn new_game_has_real_date_header() {
+        let g = Game::new();
+        let date = g.headers.get("Date").expect("date header");
+        assert_eq!(date.len(), 10);
+        assert!(!date.contains('?'), "date was {date}");
+    }
+
+    #[test]
+    fn civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+        assert_eq!(civil_from_days(20_454), (2026, 1, 1));
     }
 }
