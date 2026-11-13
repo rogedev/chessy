@@ -57,6 +57,7 @@ impl UciClient {
                         )
                     }
                     EngineCmd::Stop => "stop".to_string(),
+                    EngineCmd::IsReady => "isready".to_string(),
                     EngineCmd::SetOption { name, value } => {
                         format!("setoption name {} value {}", name, value)
                     }
@@ -125,6 +126,10 @@ impl UciClient {
 
     pub fn go_movetime(&self, ms: u64) {
         self.send(EngineCmd::GoMovetime { ms, multipv: 1 });
+    }
+
+    pub fn is_ready(&self) {
+        self.send(EngineCmd::IsReady);
     }
 
     pub fn stop(&self) {

@@ -3,9 +3,17 @@ use shakmaty::Color as PieceColor;
 
 use shakmaty::Position;
 
-use crate::chess::Game;
+use super::graph::class_color;
+use crate::chess::{Game, review::MoveClass};
 
-pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool {
+/// Draw the move list. `classes` holds one review verdict per move, when
+/// the game has been reviewed. Returns true if a move was clicked.
+pub fn show_moves_panel(
+    ui: &mut Ui,
+    game: &mut Game,
+    dark_theme: bool,
+    classes: Option<&[MoveClass]>,
+) -> bool {
     let active_color = if dark_theme {
         Color32::from_rgb(100, 160, 240)
     } else {
@@ -50,38 +58,38 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool 
                 ui.horizontal_wrapped(|ui| {
                     if i == 0 && black_first {
                         ui.label(num_label(format!("{}...", move_num)));
-                        render_move_button(
+                        clicked |= render_move_button(
                             ui,
                             game,
                             i,
                             cursor,
                             active_color,
                             text_color,
-                            &mut clicked,
+                            classes,
                         );
                         i += 1;
                     } else {
                         ui.label(num_label(format!("{}.", move_num)));
-                        render_move_button(
+                        clicked |= render_move_button(
                             ui,
                             game,
                             i,
                             cursor,
                             active_color,
                             text_color,
-                            &mut clicked,
+                            classes,
                         );
                         i += 1;
 
                         if i < move_count {
-                            render_move_button(
+                            clicked |= render_move_button(
                                 ui,
                                 game,
                                 i,
                                 cursor,
                                 active_color,
                                 text_color,
-                                &mut clicked,
+                                classes,
                             );
                             i += 1;
                         }
@@ -100,20 +108,36 @@ fn render_move_button(
     cursor: usize,
     active_color: Color32,
     text_color: Color32,
-    clicked: &mut bool,
-) {
+    classes: Option<&[MoveClass]>,
+) -> bool {
+    let class = classes.and_then(|c| c.get(index)).copied();
     let color = if cursor == index + 1 {
         active_color
     } else {
-        text_color
+        class.and_then(class_color).unwrap_or(text_color)
     };
-    let label = RichText::new(game.san[index].as_str())
+    let text = match class {
+        Some(c) => format!("{}{}", game.san[index], c.symbol()),
+        None => game.san[index].clone(),
+    };
+    let label = RichText::new(text)
         .font(FontId::proportional(13.0))
         .color(color)
         .strong();
 
-    if ui.button(label).clicked() {
-        game.go_to(index + 1);
-        *clicked = true;
+    let mut response = ui.button(label);
+    if let Some(c) = class {
+        response = response.on_hover_text(match c {
+            MoveClass::Best => "Best move",
+            MoveClass::Good => "Good move",
+            MoveClass::Inaccuracy => "Inaccuracy",
+            MoveClass::Mistake => "Mistake",
+            MoveClass::Blunder => "Blunder",
+        });
     }
+    if response.clicked() {
+        game.go_to(index + 1);
+        return true;
+    }
+    false
 }
