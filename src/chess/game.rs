@@ -106,6 +106,11 @@ impl Game {
             .collect()
     }
 
+    /// FEN of the position the game started from.
+    pub fn start_fen(&self) -> String {
+        Fen::from_position(self.start_position(), EnPassantMode::Legal).to_string()
+    }
+
     /// FEN of the current position.
     pub fn current_fen(&self) -> String {
         Fen::from_position(self.current_position(), EnPassantMode::Legal).to_string()
@@ -367,5 +372,19 @@ mod tests {
         g.make_uci_move("c7c5").expect("legal");
         let pgn = g.to_pgn();
         assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+
+    #[test]
+    fn start_fen_does_not_change_as_moves_are_played() {
+        let mut g = Game::new();
+        assert_eq!(g.start_fen(), START_FEN);
+        g.make_uci_move("e2e4").expect("legal");
+        g.make_uci_move("e7e5").expect("legal");
+        assert_eq!(g.start_fen(), START_FEN);
+        assert_ne!(g.current_fen(), START_FEN);
+
+        let fen = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
+        let custom = Game::from_fen(fen).expect("valid fen");
+        assert_eq!(custom.start_fen(), fen);
     }
 }

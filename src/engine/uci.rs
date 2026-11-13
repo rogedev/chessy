@@ -32,18 +32,7 @@ impl UciClient {
         thread::spawn(move || {
             for cmd in rx_cmd {
                 let line = match cmd {
-                    EngineCmd::SetPosition { fen, moves } => {
-                        let pos_str = if fen == "startpos" {
-                            "startpos".to_string()
-                        } else {
-                            format!("fen {}", fen)
-                        };
-                        if moves.is_empty() {
-                            format!("position {}", pos_str)
-                        } else {
-                            format!("position {} moves {}", pos_str, moves.join(" "))
-                        }
-                    }
+                    EngineCmd::SetPosition { fen, moves } => position_command(&fen, &moves),
                     EngineCmd::Go { depth, multipv } => {
                         format!(
                             "setoption name MultiPV value {}\ngo depth {}",
@@ -112,9 +101,11 @@ impl UciClient {
         self.rx.try_recv().ok()
     }
 
-    pub fn set_position(&self, fen: &str, moves: &[String]) {
+    /// Tell the engine which position to search: the game's starting FEN
+    /// and the moves played since.
+    pub fn set_position(&self, start_fen: &str, moves: &[String]) {
         self.send(EngineCmd::SetPosition {
-            fen: fen.to_string(),
+            fen: start_fen.to_string(),
             moves: moves.to_vec(),
         });
     }
@@ -147,6 +138,22 @@ impl UciClient {
             name: "UCI_LimitStrength".to_string(),
             value: "false".to_string(),
         });
+    }
+}
+
+/// UCI `position` command: a starting FEN followed by the moves played
+/// from it. The moves must be the ones that lead from `start_fen` to the
+/// position to search, never moves already contained in the FEN.
+fn position_command(start_fen: &str, moves: &[String]) -> String {
+    let pos_str = if start_fen == "startpos" {
+        "startpos".to_string()
+    } else {
+        format!("fen {}", start_fen)
+    };
+    if moves.is_empty() {
+        format!("position {}", pos_str)
+    } else {
+        format!("position {} moves {}", pos_str, moves.join(" "))
     }
 }
 
@@ -257,5 +264,19 @@ mod tests {
     fn missing_score_defaults_to_zero_cp() {
         let info = parse_info("info depth 5 pv e2e4").expect("should parse");
         assert!(matches!(info.score, Score::Cp(0)));
+    }
+
+    #[test]
+    fn position_command_formats_fen_and_moves() {
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        assert_eq!(position_command(fen, &[]), format!("position fen {fen}"));
+        assert_eq!(
+            position_command(fen, &["g1f3".to_string(), "g8f6".to_string()]),
+            format!("position fen {fen} moves g1f3 g8f6")
+        );
+        assert_eq!(
+            position_command("startpos", &["e2e4".to_string()]),
+            "position startpos moves e2e4"
+        );
     }
 }
