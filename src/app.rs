@@ -6,8 +6,8 @@ use shakmaty::{
 };
 
 use crate::{
-    audio::AudioPlayer,
-    chess::{Game, pgn},
+    audio::{AudioPlayer, SoundEvent},
+    chess::{Game, Outcome, pgn},
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
@@ -157,12 +157,8 @@ impl ChessyApp {
                     self.engine_running = false;
                     if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        if self.game.make_uci_move(&mv_str).is_ok()
-                            && let Some(audio) = &self.audio
-                        {
-                            let m = self.game.moves[self.game.cursor - 1];
-                            let event = sound_for_move(&m, self.game.current_position());
-                            audio.play(event);
+                        if self.game.make_uci_move(&mv_str).is_ok() {
+                            self.play_nav_sound();
                         }
                     }
                 }
@@ -349,15 +345,25 @@ impl ChessyApp {
         });
     }
 
+    /// Play the sound for a move that was just made (or navigated to),
+    /// upgrading it to a game-end sound when the game finished on it.
+    fn play_move_sound(&self, event: SoundEvent) {
+        let Some(audio) = &self.audio else { return };
+        audio.play(game_end_sound(
+            event,
+            self.game.outcome(),
+            (self.mode == AppMode::Play).then_some(self.player_color),
+        ));
+    }
+
     fn play_nav_sound(&self) {
         let cursor = self.game.cursor;
         if cursor == 0 {
             return;
         }
-        let Some(audio) = &self.audio else { return };
         let m = self.game.moves[cursor - 1];
         let event = sound_for_move(&m, self.game.current_position());
-        audio.play(event);
+        self.play_move_sound(event);
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
@@ -816,10 +822,8 @@ impl ChessyApp {
             });
 
         if let Some(role) = chosen_role {
-            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role)
-                && let Some(audio) = &self.audio
-            {
-                audio.play(event);
+            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role) {
+                self.play_move_sound(event);
             }
             self.interaction.pending_promotion = None;
         }
@@ -836,7 +840,7 @@ impl eframe::App for ChessyApp {
         // Trigger engine move if it's the engine's turn in play mode
         if self.mode == AppMode::Play
             && !self.waiting_for_bestmove
-            && !self.game.is_game_over()
+            && self.game.outcome().is_none()
             && self.game.at_end()
             && self.game.current_position().turn() != self.player_color
         {
@@ -1012,12 +1016,15 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    // Against the engine a draw by repetition or the fifty-move
+                    // rule ends the game; in analysis you may play on.
+                    AppMode::Play => !self.waiting_for_bestmove && self.game.outcome().is_none(),
                     AppMode::Setup => unreachable!(),
                 };
 
+                let mut move_sound = None;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
-                    if let Some(event) = BoardWidget::new(
+                    move_sound = BoardWidget::new(
                         &mut self.game,
                         self.flipped,
                         self.settings.dark_theme,
@@ -1025,18 +1032,34 @@ impl eframe::App for ChessyApp {
                         &mut self.interaction,
                         &self.piece_textures,
                     )
-                    .show(ui)
-                        && let Some(audio) = &self.audio
-                    {
-                        audio.play(event);
-                    }
+                    .show(ui);
                 });
+                if let Some(event) = move_sound {
+                    self.play_move_sound(event);
+                }
             });
 
         // Request continuous repaint while engine is running
         if self.engine_running || self.interaction.drag_from.is_some() {
             ctx.request_repaint();
         }
+    }
+}
+
+/// Choose the sound for a move given how the game stands after it.
+/// `player` is the human's colour when playing the engine, `None` otherwise.
+fn game_end_sound(
+    event: SoundEvent,
+    outcome: Option<Outcome>,
+    player: Option<PieceColor>,
+) -> SoundEvent {
+    match outcome {
+        Some(Outcome::Checkmate { winner }) => match player {
+            Some(color) if color != winner => SoundEvent::Defeat,
+            _ => SoundEvent::Victory,
+        },
+        Some(o) if o.is_draw() => SoundEvent::Draw,
+        _ => event,
     }
 }
 
@@ -1092,6 +1115,44 @@ mod tests {
 
     fn place(board: &mut Board, sq: Square, color: PieceColor, role: Role) {
         board.set_piece_at(sq, Piece { color, role });
+    }
+
+    #[test]
+    fn game_end_sound_depends_on_who_won() {
+        let white_mates = Some(Outcome::Checkmate {
+            winner: PieceColor::White,
+        });
+        let e = SoundEvent::Checkmate;
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::White)),
+            SoundEvent::Victory
+        );
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::Black)),
+            SoundEvent::Defeat
+        );
+        // Analysis has no "player": a mate is always the victory sound.
+        assert_eq!(game_end_sound(e, white_mates, None), SoundEvent::Victory);
+    }
+
+    #[test]
+    fn game_end_sound_for_draws_and_ordinary_moves() {
+        assert_eq!(
+            game_end_sound(
+                SoundEvent::Capture,
+                Some(Outcome::ThreefoldRepetition),
+                Some(PieceColor::White)
+            ),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Move, Some(Outcome::FiftyMoveRule), None),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Capture, None, None),
+            SoundEvent::Capture
+        );
     }
 
     #[test]

@@ -461,6 +461,10 @@ fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
 }
 
 pub(crate) fn sound_for_move(m: &Move, resulting_pos: &Chess) -> SoundEvent {
+    if resulting_pos.is_checkmate() {
+        return SoundEvent::Checkmate;
+    }
+
     if resulting_pos.is_stalemate() || resulting_pos.is_insufficient_material() {
         return SoundEvent::Draw;
     }
@@ -712,8 +716,8 @@ mod tests {
     }
 
     #[test]
-    fn sound_for_move_checkmate_plays_move_sound() {
-        // Fool's mate: checkmate plays Move sound (same as regular moves)
+    fn sound_for_move_checkmate() {
+        // Fool's mate
         let pos = pos_from_fen("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
         let m = pos
             .legal_moves()
@@ -723,7 +727,7 @@ mod tests {
         let mut next = pos.clone();
         next.play_unchecked(m);
         assert!(next.is_checkmate(), "expected checkmate");
-        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Checkmate));
     }
 
     #[test]
