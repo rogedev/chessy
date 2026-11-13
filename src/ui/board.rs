@@ -143,7 +143,7 @@ impl<'a> BoardWidget<'a> {
             pos.legal_moves()
                 .iter()
                 .filter(|m| m.from() == Some(from))
-                .map(|m| m.to())
+                .map(king_destination)
                 .collect()
         } else {
             vec![]
@@ -446,6 +446,24 @@ fn handle_click(
     None
 }
 
+/// Where the moving piece ends up. shakmaty encodes castling as "king takes
+/// own rook", so for castling this is the king's real destination (g1, c1,
+/// g8 or c8) rather than the rook's square.
+fn king_destination(m: &Move) -> Square {
+    match (m, m.castling_side()) {
+        (Move::Castle { king, .. }, Some(side)) => {
+            side.king_to(PieceColor::from_white(king.rank() == Rank::First))
+        }
+        _ => m.to(),
+    }
+}
+
+/// Whether choosing `to` as the target selects move `m`. Castling accepts
+/// both the king's destination and the rook's square.
+fn lands_on(m: &Move, to: Square) -> bool {
+    m.to() == to || king_destination(m) == to
+}
+
 fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
     game.current_position().legal_moves().iter().any(|m| {
         m.from() == Some(from)
@@ -493,7 +511,7 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent
     let legals = game.current_position().legal_moves();
     let m = legals.iter().find(|m| {
         m.from() == Some(from)
-            && m.to() == to
+            && lands_on(m, to)
             && !matches!(
                 m,
                 Move::Normal {
@@ -739,5 +757,55 @@ mod tests {
         next.play_unchecked(m);
         assert!(next.is_stalemate(), "expected stalemate");
         assert!(matches!(sound_for_move(&m, &next), SoundEvent::Draw));
+    }
+
+    const CASTLE_BOTH: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+
+    #[test]
+    fn castles_by_moving_king_two_squares() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_some());
+        assert_eq!(game.san, vec!["O-O"]);
+
+        assert!(try_make_move(&mut game, Square::E8, Square::C8).is_some());
+        assert_eq!(game.san, vec!["O-O", "O-O-O"]);
+    }
+
+    #[test]
+    fn castles_by_moving_king_onto_rook() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::A1).is_some());
+        assert_eq!(game.san, vec!["O-O-O"]);
+    }
+
+    #[test]
+    fn king_step_next_to_castling_square_is_still_a_king_move() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::F1).is_some());
+        assert_eq!(game.san, vec!["Kf1"]);
+    }
+
+    #[test]
+    fn castling_hint_is_on_the_kings_destination() {
+        let game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        let dests: Vec<Square> = game
+            .current_position()
+            .legal_moves()
+            .iter()
+            .filter(|m| m.from() == Some(Square::E1))
+            .map(king_destination)
+            .collect();
+        assert!(dests.contains(&Square::G1));
+        assert!(dests.contains(&Square::C1));
+        assert!(!dests.contains(&Square::H1));
+        assert!(!dests.contains(&Square::A1));
+    }
+
+    #[test]
+    fn no_castling_through_the_click_when_it_is_illegal() {
+        // Black rook on f8 covers f1, so White may not castle short.
+        let mut game = Game::from_fen("4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1").expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_none());
+        assert_eq!(game.cursor, 0);
     }
 }
