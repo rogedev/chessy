@@ -7,7 +7,11 @@ use shakmaty::{
 
 use crate::{
     audio::AudioPlayer,
-    chess::{Game, pgn},
+    chess::{
+        Game,
+        clock::{self, Clock, format_clock},
+        pgn,
+    },
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
@@ -63,6 +67,12 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
+    /// Clocks for the current game against the engine, when timed.
+    clock: Option<Clock>,
+    /// Number of moves the clock has accounted for.
+    clock_plies: usize,
+    /// Frame time in seconds, from egui's monotonic clock.
+    now: f64,
 }
 
 impl ChessyApp {
@@ -93,6 +103,9 @@ impl ChessyApp {
             setup_turn: PieceColor::White,
             setup_palette: None,
             setup_error: None,
+            clock: None,
+            clock_plies: 0,
+            now: 0.0,
         };
         app.start_analysis();
         app
@@ -138,7 +151,18 @@ impl ChessyApp {
         } else {
             engine.disable_limit_strength();
         }
-        engine.go_movetime(self.settings.movetime_ms);
+        match &self.clock {
+            // Timed game: the engine budgets from the clocks, capped by the
+            // configured move time so long controls stay snappy.
+            Some(clock) => engine.go_clock(
+                clock.remaining_ms(PieceColor::White).max(1) as u64,
+                clock.remaining_ms(PieceColor::Black).max(1) as u64,
+                clock.increment_ms() as u64,
+                clock.increment_ms() as u64,
+                self.settings.movetime_ms,
+            ),
+            None => engine.go_movetime(self.settings.movetime_ms),
+        }
         self.engine_running = true;
         self.waiting_for_bestmove = true;
         self.engine_lines.clear();
@@ -190,8 +214,59 @@ impl ChessyApp {
         self.engine_lines[idx] = info;
     }
 
+    /// Give the game a fresh clock if playing a timed game, none otherwise.
+    fn reset_clock(&mut self) {
+        self.clock = (self.mode == AppMode::Play)
+            .then(|| clock::preset(&self.settings.time_control))
+            .flatten()
+            .map(Clock::new);
+        self.clock_plies = self.game.moves.len();
+    }
+
+    /// Keep the clock in step with the game: charge the running side, hand
+    /// over after each move, and stop when the game ends.
+    fn update_clock(&mut self) {
+        let now = self.now;
+        let active = self.mode == AppMode::Play && !self.game.is_game_over();
+        let Some(clock) = &mut self.clock else { return };
+
+        let plies = self.game.moves.len();
+        for ply in self.clock_plies..plies {
+            clock.on_move(self.game.positions[ply].turn(), now);
+        }
+        self.clock_plies = plies;
+
+        if active {
+            clock.tick(now);
+        } else {
+            clock.pause(now);
+        }
+
+        if let Some(loser) = clock.flagged()
+            && self.game.headers.get("Result").map(String::as_str) == Some("*")
+        {
+            let result = match loser {
+                PieceColor::White => "0-1",
+                PieceColor::Black => "1-0",
+            };
+            self.game
+                .headers
+                .insert("Result".to_string(), result.to_string());
+            if let Some(engine) = &self.engine {
+                engine.stop();
+            }
+            self.waiting_for_bestmove = false;
+        }
+    }
+
+    /// The side that lost on time, if the game ended that way.
+    fn flagged(&self) -> Option<PieceColor> {
+        self.clock.as_ref().and_then(Clock::flagged)
+    }
+
     fn new_game(&mut self) {
         self.game = Game::new();
+        self.reset_clock();
         self.engine_lines.clear();
         self.eval_score = None;
         self.interaction.selected = None;
@@ -215,6 +290,8 @@ impl ChessyApp {
     /// to analyze mode.
     fn load_game(&mut self, game: Game, switch_to_analyze: bool) {
         self.game = game;
+        self.clock = None;
+        self.clock_plies = self.game.moves.len();
         self.engine_lines.clear();
         self.eval_score = None;
         self.interaction.selected = None;
@@ -417,6 +494,10 @@ impl ChessyApp {
                 {
                     self.mode = AppMode::Play;
                     self.engine_lines.clear();
+                    // A game that has not started yet gets the clock.
+                    if self.game.moves.is_empty() {
+                        self.reset_clock();
+                    }
                     ui.close();
                 }
                 if ui
@@ -444,6 +525,24 @@ impl ChessyApp {
                     self.flipped = true;
                     ui.close();
                 }
+                ui.separator();
+                section(ui, "Time control (next game)");
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(190.0);
+                    for (label, _) in clock::PRESETS {
+                        if ui
+                            .selectable_label(self.settings.time_control == *label, *label)
+                            .clicked()
+                        {
+                            self.settings.time_control = label.to_string();
+                            self.settings.save();
+                            // Applies at once if the game has not started.
+                            if self.game.moves.is_empty() {
+                                self.reset_clock();
+                            }
+                        }
+                    }
+                });
             });
 
             ui.menu_button("View", |ui| {
@@ -830,13 +929,16 @@ impl eframe::App for ChessyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        self.now = ctx.input(|i| i.time);
         self.poll_engine();
         self.handle_keyboard(&ctx);
+        self.update_clock();
 
         // Trigger engine move if it's the engine's turn in play mode
         if self.mode == AppMode::Play
             && !self.waiting_for_bestmove
             && !self.game.is_game_over()
+            && self.flagged().is_none()
             && self.game.at_end()
             && self.game.current_position().turn() != self.player_color
         {
@@ -912,13 +1014,16 @@ impl eframe::App for ChessyApp {
                     Color32::from_rgb(30, 30, 30)
                 };
 
+                let clock = self.clock.clone();
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
                     ui.label(RichText::new(black).color(text_col).strong());
+                    show_clock(ui, clock.as_ref(), PieceColor::Black, text_col);
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♙ ").color(Color32::WHITE));
                     ui.label(RichText::new(white).color(text_col).strong());
+                    show_clock(ui, clock.as_ref(), PieceColor::White, text_col);
                 });
 
                 ui.separator();
@@ -977,8 +1082,13 @@ impl eframe::App for ChessyApp {
             .frame(egui::Frame::new().fill(bg_color))
             .show_inside(ui, |ui| {
                 // Status message (not shown while editing a position)
+                let outcome = match self.flagged() {
+                    Some(PieceColor::White) => Some("White lost on time · Black wins".to_string()),
+                    Some(PieceColor::Black) => Some("Black lost on time · White wins".to_string()),
+                    None => self.game.outcome_string(),
+                };
                 if self.mode != AppMode::Setup
-                    && let Some(outcome) = self.game.outcome_string()
+                    && let Some(outcome) = outcome
                 {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -1012,7 +1122,7 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    AppMode::Play => !self.waiting_for_bestmove && self.flagged().is_none(),
                     AppMode::Setup => unreachable!(),
                 };
 
@@ -1037,7 +1147,41 @@ impl eframe::App for ChessyApp {
         if self.engine_running || self.interaction.drag_from.is_some() {
             ctx.request_repaint();
         }
+        // Keep a running clock ticking even when nothing else changes.
+        if self.clock.as_ref().is_some_and(|c| c.running().is_some()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
+}
+
+/// Draw one side's clock at the right edge of its player row.
+fn show_clock(ui: &mut Ui, clock: Option<&Clock>, color: PieceColor, text_col: Color32) {
+    let Some(clock) = clock else { return };
+    let ms = clock.remaining_ms(color);
+    let running = clock.running() == Some(color);
+
+    let (fg, bg) = if clock.flagged() == Some(color) || (running && ms < 10_000) {
+        (Color32::WHITE, Color32::from_rgb(190, 50, 50))
+    } else if running {
+        (Color32::BLACK, Color32::from_rgb(235, 235, 235))
+    } else {
+        (text_col, Color32::TRANSPARENT)
+    };
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::symmetric(6, 1))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format_clock(ms))
+                        .font(FontId::monospace(15.0))
+                        .color(fg)
+                        .strong(),
+                );
+            });
+    });
 }
 
 fn infer_castling(board: &Board) -> Bitboard {
