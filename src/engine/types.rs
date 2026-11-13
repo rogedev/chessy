@@ -68,11 +68,26 @@ impl EngineInfo {
 }
 
 pub enum EngineCmd {
-    SetPosition { fen: String, moves: Vec<String> },
-    Go { depth: u8, multipv: u8 },
-    GoMovetime { ms: u64, multipv: u8 },
+    SetPosition {
+        fen: String,
+        moves: Vec<String>,
+    },
+    Go {
+        depth: u8,
+        multipv: u8,
+    },
+    GoMovetime {
+        ms: u64,
+        multipv: u8,
+    },
     Stop,
-    SetOption { name: String, value: String },
+    /// Ask for `readyok`: everything the engine printed before it belongs
+    /// to earlier commands.
+    IsReady,
+    SetOption {
+        name: String,
+        value: String,
+    },
 }
 
 pub enum EngineOutput {
