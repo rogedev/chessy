@@ -27,6 +27,9 @@ const SHORTCUT_OPEN_PGN: egui::KeyboardShortcut =
 const SHORTCUT_SAVE_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S);
 
+/// Longest time spent computing a hint.
+const HINT_MOVETIME_MS: u64 = 1500;
+
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
     ("Casual", 1200),
@@ -63,6 +66,17 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
+    /// Searches that were abandoned with `stop` and whose final `bestmove`
+    /// (and any analysis lines before it) must be ignored when they arrive.
+    stale_searches: u32,
+    /// A hint search is running for the player.
+    waiting_for_hint: bool,
+    /// Suggested move and the position (FEN) it was computed for.
+    hint: Option<(Square, Square, String)>,
+    /// The side that resigned, if any.
+    resigned: Option<PieceColor>,
+    /// Resign was clicked once and awaits confirmation.
+    resign_armed: bool,
 }
 
 impl ChessyApp {
@@ -93,6 +107,11 @@ impl ChessyApp {
             setup_turn: PieceColor::White,
             setup_palette: None,
             setup_error: None,
+            stale_searches: 0,
+            waiting_for_hint: false,
+            hint: None,
+            resigned: None,
+            resign_armed: false,
         };
         app.start_analysis();
         app
@@ -103,6 +122,10 @@ impl ChessyApp {
         self.engine_lines.clear();
         self.eval_score = None;
         self.engine_running = false;
+        // A fresh process owes us nothing from earlier searches.
+        self.stale_searches = 0;
+        self.waiting_for_bestmove = false;
+        self.waiting_for_hint = false;
         if let Some(engine) = &self.engine {
             if self.settings.limit_strength {
                 engine.set_elo(self.settings.engine_elo);
@@ -119,7 +142,10 @@ impl ChessyApp {
             return;
         }
         let uci_moves = self.game.uci_moves_to_cursor();
-        engine.stop();
+        if self.engine_running {
+            engine.stop();
+            self.stale_searches += 1;
+        }
         engine.set_position(&fen, &uci_moves);
         engine.go_depth(self.settings.analysis_depth, self.settings.multipv);
         self.engine_running = true;
@@ -131,7 +157,10 @@ impl ChessyApp {
         let Some(engine) = &self.engine else { return };
         let fen = self.game.current_fen();
         let uci_moves = self.game.uci_moves_to_cursor();
-        engine.stop();
+        if self.engine_running {
+            engine.stop();
+            self.stale_searches += 1;
+        }
         engine.set_position(&fen, &uci_moves);
         if self.settings.limit_strength {
             engine.set_elo(self.settings.engine_elo);
@@ -141,7 +170,104 @@ impl ChessyApp {
         engine.go_movetime(self.settings.movetime_ms);
         self.engine_running = true;
         self.waiting_for_bestmove = true;
+        self.waiting_for_hint = false;
         self.engine_lines.clear();
+    }
+
+    /// Abandon whatever the engine is searching.
+    fn stop_search(&mut self) {
+        if self.engine_running
+            && let Some(engine) = &self.engine
+        {
+            engine.stop();
+            self.stale_searches += 1;
+        }
+        self.engine_running = false;
+        self.waiting_for_bestmove = false;
+        self.waiting_for_hint = false;
+    }
+
+    /// Whether the game against the engine has finished.
+    fn play_is_over(&self) -> bool {
+        self.resigned.is_some() || self.game.is_game_over()
+    }
+
+    /// The player may ask for a hint or resign: it is their move in a live game.
+    fn players_turn(&self) -> bool {
+        self.mode == AppMode::Play
+            && !self.play_is_over()
+            && self.game.at_end()
+            && self.game.current_position().turn() == self.player_color
+    }
+
+    /// Ask the engine, at full strength, what it would play for the player.
+    fn request_hint(&mut self) {
+        if !self.players_turn() || self.engine.is_none() {
+            return;
+        }
+        self.stop_search();
+        let Some(engine) = &self.engine else { return };
+        let fen = self.game.current_fen();
+        engine.set_position(&fen, &self.game.uci_moves_to_cursor());
+        engine.disable_limit_strength();
+        engine.go_movetime(self.settings.movetime_ms.min(HINT_MOVETIME_MS));
+        self.engine_running = true;
+        self.waiting_for_hint = true;
+        self.hint = None;
+    }
+
+    /// Undo the player's last move (and the engine's reply, if it has made one).
+    fn takeback(&mut self) {
+        let player_to_move = self.game.positions[self.game.moves.len()].turn() == self.player_color;
+        let plies = takeback_plies(self.game.moves.len(), player_to_move);
+        if plies == 0 {
+            return;
+        }
+        self.stop_search();
+        self.game.take_back(plies);
+        self.game
+            .headers
+            .insert("Result".to_string(), "*".to_string());
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
+        self.interaction.selected = None;
+        self.interaction.pending_promotion = None;
+    }
+
+    fn resign(&mut self) {
+        if self.mode != AppMode::Play || self.play_is_over() {
+            return;
+        }
+        self.stop_search();
+        self.resigned = Some(self.player_color);
+        self.resign_armed = false;
+        self.hint = None;
+        let result = match self.player_color {
+            PieceColor::White => "0-1",
+            PieceColor::Black => "1-0",
+        };
+        self.game
+            .headers
+            .insert("Result".to_string(), result.to_string());
+    }
+
+    /// Start playing the engine from the position on the board. The player
+    /// takes the side to move; later moves of the old game are dropped.
+    fn play_from_here(&mut self) {
+        self.stop_search();
+        self.game.truncate_to_cursor();
+        self.game
+            .headers
+            .insert("Result".to_string(), "*".to_string());
+        self.player_color = self.game.current_position().turn();
+        self.flipped = self.player_color == PieceColor::Black;
+        self.mode = AppMode::Play;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
+        self.engine_lines.clear();
+        self.interaction.selected = None;
     }
 
     fn poll_engine(&mut self) {
@@ -152,10 +278,19 @@ impl ChessyApp {
 
         for msg in messages {
             match msg {
+                // Output of a search we already abandoned.
+                EngineOutput::Info(_) if self.stale_searches > 0 => {}
+                EngineOutput::BestMove(_) if self.stale_searches > 0 => {
+                    self.stale_searches -= 1;
+                }
                 EngineOutput::Info(info) => self.upsert_engine_line(info),
                 EngineOutput::BestMove(mv_str) => {
                     self.engine_running = false;
-                    if self.waiting_for_bestmove && self.mode == AppMode::Play {
+                    if self.waiting_for_hint {
+                        self.waiting_for_hint = false;
+                        self.hint = uci_from_to(&mv_str)
+                            .map(|(from, to)| (from, to, self.game.current_fen()));
+                    } else if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
                         if self.game.make_uci_move(&mv_str).is_ok()
                             && let Some(audio) = &self.audio
@@ -197,9 +332,12 @@ impl ChessyApp {
         self.interaction.selected = None;
         self.interaction.drag_from = None;
         self.interaction.drag_pos = None;
-        self.waiting_for_bestmove = false;
+        self.stop_search();
         self.last_analyzed_fen = String::new();
         self.interaction.pending_promotion = None;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
 
         if self.mode == AppMode::Analyze {
             self.start_analysis();
@@ -218,6 +356,9 @@ impl ChessyApp {
         self.engine_lines.clear();
         self.eval_score = None;
         self.interaction.selected = None;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
         if switch_to_analyze {
             self.mode = AppMode::Analyze;
         }
@@ -406,8 +547,9 @@ impl ChessyApp {
                     .selectable_label(self.mode == AppMode::Analyze, "Analyze")
                     .clicked()
                 {
+                    self.stop_search();
                     self.mode = AppMode::Analyze;
-                    self.waiting_for_bestmove = false;
+                    self.last_analyzed_fen.clear();
                     self.start_analysis();
                     ui.close();
                 }
@@ -415,8 +557,20 @@ impl ChessyApp {
                     .selectable_label(self.mode == AppMode::Play, "Play vs Engine")
                     .clicked()
                 {
+                    self.stop_search();
                     self.mode = AppMode::Play;
                     self.engine_lines.clear();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.mode != AppMode::Setup && !self.game.is_game_over(),
+                        egui::Button::new("Play from Current Position"),
+                    )
+                    .on_hover_text("Play the engine from this position, as the side to move")
+                    .clicked()
+                {
+                    self.play_from_here();
                     ui.close();
                 }
                 if ui
@@ -687,6 +841,65 @@ impl ChessyApp {
         self.show_about = open;
     }
 
+    /// Takeback, Hint and Resign, shown while playing the engine.
+    fn show_play_controls(&mut self, ui: &mut Ui) {
+        let player_to_move = self.game.positions[self.game.moves.len()].turn() == self.player_color;
+        let can_take_back = takeback_plies(self.game.moves.len(), player_to_move) > 0;
+        let can_act = self.players_turn();
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(can_take_back, egui::Button::new("Takeback"))
+                .on_hover_text("Undo your last move")
+                .clicked()
+            {
+                self.takeback();
+            }
+
+            if ui
+                .add_enabled(
+                    can_act && self.engine.is_some() && !self.waiting_for_hint,
+                    egui::Button::new("Hint"),
+                )
+                .on_hover_text("Show the engine's suggestion for your move")
+                .clicked()
+            {
+                self.request_hint();
+            }
+
+            if self.play_is_over() {
+                if ui.button("New Game").clicked() {
+                    self.new_game();
+                }
+            } else if self.resign_armed {
+                if ui
+                    .button(RichText::new("Confirm resign").color(Color32::from_rgb(220, 80, 80)))
+                    .clicked()
+                {
+                    self.resign();
+                }
+                if ui.button("Cancel").clicked() {
+                    self.resign_armed = false;
+                }
+            } else if ui.button("Resign").clicked() {
+                self.resign_armed = true;
+            }
+        });
+
+        let status = if self.waiting_for_hint {
+            Some("Finding a hint…")
+        } else if self.waiting_for_bestmove {
+            Some("Engine is thinking…")
+        } else if self.engine.is_none() {
+            Some("Engine offline: set its path in Engine → Settings")
+        } else {
+            None
+        };
+        if let Some(text) = status {
+            ui.label(RichText::new(text).small().italics().color(Color32::GRAY));
+        }
+    }
+
     fn show_setup_panel(&mut self, ui: &mut Ui) {
         ui.label(RichText::new("Set Up Position").strong());
         ui.add_space(6.0);
@@ -836,7 +1049,7 @@ impl eframe::App for ChessyApp {
         // Trigger engine move if it's the engine's turn in play mode
         if self.mode == AppMode::Play
             && !self.waiting_for_bestmove
-            && !self.game.is_game_over()
+            && !self.play_is_over()
             && self.game.at_end()
             && self.game.current_position().turn() != self.player_color
         {
@@ -934,6 +1147,10 @@ impl eframe::App for ChessyApp {
                     show_analysis_panel(ui, &self.engine_lines, &pos, self.settings.dark_theme);
                 }
 
+                if self.mode == AppMode::Play {
+                    self.show_play_controls(ui);
+                }
+
                 ui.separator();
 
                 // Navigation buttons
@@ -977,8 +1194,13 @@ impl eframe::App for ChessyApp {
             .frame(egui::Frame::new().fill(bg_color))
             .show_inside(ui, |ui| {
                 // Status message (not shown while editing a position)
+                let outcome = match self.resigned {
+                    Some(PieceColor::White) => Some("White resigned · Black wins".to_string()),
+                    Some(PieceColor::Black) => Some("Black resigned · White wins".to_string()),
+                    None => self.game.outcome_string(),
+                };
                 if self.mode != AppMode::Setup
-                    && let Some(outcome) = self.game.outcome_string()
+                    && let Some(outcome) = outcome
                 {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -1012,9 +1234,16 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    AppMode::Play => !self.waiting_for_bestmove && self.resigned.is_none(),
                     AppMode::Setup => unreachable!(),
                 };
+
+                // A hint is only valid for the position it was computed for.
+                let hint = self
+                    .hint
+                    .as_ref()
+                    .filter(|(_, _, fen)| *fen == self.game.current_fen())
+                    .map(|(from, to, _)| (*from, *to));
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
                     if let Some(event) = BoardWidget::new(
@@ -1025,6 +1254,7 @@ impl eframe::App for ChessyApp {
                         &mut self.interaction,
                         &self.piece_textures,
                     )
+                    .with_hint(hint)
                     .show(ui)
                         && let Some(audio) = &self.audio
                     {
@@ -1038,6 +1268,21 @@ impl eframe::App for ChessyApp {
             ctx.request_repaint();
         }
     }
+}
+
+/// How many plies a takeback removes: the player's last move, plus the
+/// engine's reply when it has already answered. Zero when the player has
+/// not made a move yet.
+fn takeback_plies(moves: usize, player_to_move: bool) -> usize {
+    let wanted = if player_to_move { 2 } else { 1 };
+    if moves >= wanted { wanted } else { 0 }
+}
+
+/// From and to squares of a UCI move such as `e2e4` or `e7e8q`.
+fn uci_from_to(uci: &str) -> Option<(Square, Square)> {
+    let from = uci.get(0..2)?.parse().ok()?;
+    let to = uci.get(2..4)?.parse().ok()?;
+    Some((from, to))
 }
 
 fn infer_castling(board: &Board) -> Bitboard {
@@ -1092,6 +1337,34 @@ mod tests {
 
     fn place(board: &mut Board, sq: Square, color: PieceColor, role: Role) {
         board.set_piece_at(sq, Piece { color, role });
+    }
+
+    #[test]
+    fn takeback_removes_own_move_and_engine_reply() {
+        // Player to move after the engine answered: undo both.
+        assert_eq!(takeback_plies(2, true), 2);
+        assert_eq!(takeback_plies(7, true), 2);
+        // Engine still thinking about its reply: undo only the player's move.
+        assert_eq!(takeback_plies(1, false), 1);
+        assert_eq!(takeback_plies(6, false), 1);
+    }
+
+    #[test]
+    fn takeback_is_unavailable_before_the_player_has_moved() {
+        // Fresh game as White.
+        assert_eq!(takeback_plies(0, true), 0);
+        // Playing Black: the engine opened, the player has not moved yet.
+        assert_eq!(takeback_plies(1, true), 0);
+        // Playing Black, engine has not even opened.
+        assert_eq!(takeback_plies(0, false), 0);
+    }
+
+    #[test]
+    fn uci_from_to_parses_moves_and_rejects_none() {
+        assert_eq!(uci_from_to("e2e4"), Some((Square::E2, Square::E4)));
+        assert_eq!(uci_from_to("a7a8q"), Some((Square::A7, Square::A8)));
+        assert_eq!(uci_from_to("(none)"), None);
+        assert_eq!(uci_from_to(""), None);
     }
 
     #[test]
