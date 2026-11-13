@@ -120,7 +120,10 @@ impl ChessyApp {
         }
         let uci_moves = self.game.uci_moves_to_cursor();
         engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        // The moves lead from the game's start, so that is the FEN to send.
+        // Sending the current FEN with them would play the game a second
+        // time on top of the position it already reached.
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         engine.go_depth(self.settings.analysis_depth, self.settings.multipv);
         self.engine_running = true;
         self.last_analyzed_fen = fen;
@@ -129,10 +132,9 @@ impl ChessyApp {
 
     fn request_engine_move(&mut self) {
         let Some(engine) = &self.engine else { return };
-        let fen = self.game.current_fen();
         let uci_moves = self.game.uci_moves_to_cursor();
         engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         if self.settings.limit_strength {
             engine.set_elo(self.settings.engine_elo);
         } else {
