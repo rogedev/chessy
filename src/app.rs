@@ -13,8 +13,8 @@ use crate::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
         board::{
-            BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
-            sound_for_move, try_make_promotion_move,
+            BOARD_THEMES, BoardInteraction, BoardStyle, BoardTheme, BoardWidget, PieceTextures,
+            SetupBoardWidget, available_piece_sets, sound_for_move, try_make_promotion_move,
         },
         moves::show_moves_panel,
     },
@@ -96,6 +96,13 @@ impl ChessyApp {
         };
         app.start_analysis();
         app
+    }
+
+    fn board_style(&self) -> BoardStyle {
+        BoardStyle {
+            theme: BoardTheme::resolve(&self.settings.board_theme, self.settings.dark_theme),
+            show_coordinates: self.settings.show_coordinates,
+        }
     }
 
     fn reconnect_engine(&mut self) {
@@ -556,6 +563,8 @@ impl ChessyApp {
         let mut movetime_ms = self.settings.movetime_ms;
         let mut multipv = self.settings.multipv;
         let mut piece_set = self.settings.piece_set.clone();
+        let mut board_theme = self.settings.board_theme.clone();
+        let mut show_coordinates = self.settings.show_coordinates;
         let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
@@ -636,6 +645,31 @@ impl ChessyApp {
                     });
                 }
 
+                ui.add_space(4.0);
+                ui.label("Board colours:");
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(board_theme.is_empty(), "Auto")
+                        .on_hover_text("Green with the dark interface, brown with the light one")
+                        .clicked()
+                    {
+                        board_theme.clear();
+                    }
+                    for theme in BOARD_THEMES {
+                        let selected = board_theme.eq_ignore_ascii_case(theme.name);
+                        // Two-square swatch followed by the theme name.
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
+                        let (left, right) = rect.split_left_right_at_fraction(0.5);
+                        ui.painter().rect_filled(left, 0.0, theme.light);
+                        ui.painter().rect_filled(right, 0.0, theme.dark);
+                        if ui.selectable_label(selected, theme.name).clicked() {
+                            board_theme = theme.name.to_string();
+                        }
+                    }
+                });
+                ui.checkbox(&mut show_coordinates, "Show coordinates");
+
                 ui.separator();
 
                 ui.horizontal(|ui| {
@@ -656,6 +690,8 @@ impl ChessyApp {
         self.settings.movetime_ms = movetime_ms;
         self.settings.multipv = multipv;
         self.settings.piece_set = piece_set;
+        self.settings.board_theme = board_theme;
+        self.settings.show_coordinates = show_coordinates;
 
         if close {
             self.show_settings = false;
@@ -792,28 +828,54 @@ impl ChessyApp {
         };
         let mut chosen_role: Option<Role> = None;
 
+        let color = self.game.current_position().turn();
+        let mut cancelled = ctx.input(|i| i.key_pressed(Key::Escape));
+
         egui::Window::new("Promote Pawn")
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Choose promotion piece:");
-                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
-                        let label = match role {
+                        let name = match role {
                             Role::Queen => "Queen",
                             Role::Rook => "Rook",
                             Role::Bishop => "Bishop",
                             Role::Knight => "Knight",
                             _ => unreachable!(),
                         };
-                        if ui.button(label).clicked() {
+                        // Piece image when the set has one, text otherwise.
+                        let clicked = match self.piece_textures.get(Piece { color, role }) {
+                            Some(tex) => {
+                                let img = egui::Image::from_texture(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::vec2(56.0, 56.0),
+                                ));
+                                ui.add(egui::Button::image(img))
+                                    .on_hover_text(name)
+                                    .clicked()
+                            }
+                            None => ui.button(name).clicked(),
+                        };
+                        if clicked {
                             chosen_role = Some(role);
                         }
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                    ui.label(RichText::new("Esc").small().color(Color32::GRAY));
+                });
             });
+
+        if cancelled && chosen_role.is_none() {
+            self.interaction.pending_promotion = None;
+            return;
+        }
 
         if let Some(role) = chosen_role {
             if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role)
@@ -990,6 +1052,7 @@ impl eframe::App for ChessyApp {
                     });
                 }
 
+                let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
                 let board_size = available.width().min(available.height());
                 let board_rect =
@@ -1000,7 +1063,7 @@ impl eframe::App for ChessyApp {
                         SetupBoardWidget::new(
                             &mut self.setup_board,
                             self.flipped,
-                            self.settings.dark_theme,
+                            board_style,
                             self.setup_palette,
                             &self.piece_textures,
                         )
@@ -1020,7 +1083,7 @@ impl eframe::App for ChessyApp {
                     if let Some(event) = BoardWidget::new(
                         &mut self.game,
                         self.flipped,
-                        self.settings.dark_theme,
+                        board_style,
                         is_interactive,
                         &mut self.interaction,
                         &self.piece_textures,
