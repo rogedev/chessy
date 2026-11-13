@@ -7,7 +7,10 @@ use shakmaty::{
 
 use crate::{
     audio::AudioPlayer,
-    chess::{Game, pgn},
+    chess::{
+        Game, pgn,
+        review::{PositionEval, Review, start_fen},
+    },
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
@@ -16,6 +19,7 @@ use crate::{
             BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
             sound_for_move, try_make_promotion_move,
         },
+        graph::show_eval_graph,
         moves::show_moves_panel,
     },
 };
@@ -34,6 +38,22 @@ const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Advanced", 2000),
     ("Strong", 2400),
 ];
+
+/// Search depth used for every position during a game review.
+const REVIEW_DEPTH: u8 = 14;
+
+/// A game review in progress: the engine evaluates one position at a time.
+struct ReviewRun {
+    /// The game being reviewed, frozen so edits cannot disturb the run.
+    game: Game,
+    start_fen: String,
+    /// Evaluations gathered so far; the next position to search is `evals.len()`.
+    evals: Vec<PositionEval>,
+    /// Latest score reported for the position being searched.
+    latest: Option<Score>,
+    /// False until the engine confirms it has finished earlier work.
+    ready: bool,
+}
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum AppMode {
@@ -63,6 +83,8 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
+    review_run: Option<ReviewRun>,
+    review: Option<Review>,
 }
 
 impl ChessyApp {
@@ -93,6 +115,8 @@ impl ChessyApp {
             setup_turn: PieceColor::White,
             setup_palette: None,
             setup_error: None,
+            review_run: None,
+            review: None,
         };
         app.start_analysis();
         app
@@ -113,6 +137,9 @@ impl ChessyApp {
     }
 
     fn start_analysis(&mut self) {
+        // Anything that restarts analysis (new game, loaded game, engine
+        // settings) abandons a review in progress.
+        self.review_run = None;
         let Some(engine) = &self.engine else { return };
         let fen = self.game.current_fen();
         if fen == self.last_analyzed_fen && self.engine_running {
@@ -144,6 +171,110 @@ impl ChessyApp {
         self.engine_lines.clear();
     }
 
+    /// Begin reviewing the current game: stop analysis and evaluate every
+    /// position in turn.
+    fn start_review(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        if self.game.moves.is_empty() {
+            return;
+        }
+        engine.stop();
+        // Output of the interrupted search arrives before `readyok`.
+        engine.is_ready();
+        self.review = None;
+        self.review_run = Some(ReviewRun {
+            start_fen: start_fen(&self.game),
+            game: self.game.clone(),
+            evals: vec![],
+            latest: None,
+            ready: false,
+        });
+        self.engine_running = true;
+        self.engine_lines.clear();
+    }
+
+    fn cancel_review(&mut self) {
+        if self.review_run.take().is_some() {
+            if let Some(engine) = &self.engine {
+                engine.stop();
+            }
+            self.engine_running = false;
+            self.last_analyzed_fen.clear();
+        }
+    }
+
+    /// Search the next unevaluated position, or finish the review.
+    fn review_advance(&mut self) {
+        let Some(run) = &mut self.review_run else {
+            return;
+        };
+
+        // Finished positions (mate, stalemate) are scored without the engine.
+        while let Some(pos) = run.game.positions.get(run.evals.len()) {
+            match PositionEval::terminal(pos) {
+                Some(eval) => run.evals.push(eval),
+                None => break,
+            }
+        }
+
+        let ply = run.evals.len();
+        if ply < run.game.positions.len() {
+            if let Some(engine) = &self.engine {
+                run.latest = None;
+                engine.set_position(&run.start_fen, &run.game.uci_moves(ply));
+                engine.go_depth(REVIEW_DEPTH, 1);
+            }
+            return;
+        }
+
+        // Every position is evaluated.
+        let run = self.review_run.take().expect("checked above");
+        self.review = Review::build(&run.game, run.evals);
+        self.engine_running = false;
+        self.last_analyzed_fen.clear();
+    }
+
+    /// Feed one engine message to the running review.
+    fn review_handle(&mut self, msg: EngineOutput) {
+        let Some(run) = &mut self.review_run else {
+            return;
+        };
+        match msg {
+            EngineOutput::Ready => {
+                run.ready = true;
+                self.review_advance();
+            }
+            // Until `readyok`, output belongs to the interrupted analysis.
+            _ if !run.ready => {}
+            EngineOutput::Info(info) => {
+                if info.multipv == 1 && !info.pv.is_empty() {
+                    run.latest = Some(info.score);
+                }
+            }
+            EngineOutput::BestMove(best) => {
+                let ply = run.evals.len();
+                if let Some(pos) = run.game.positions.get(ply) {
+                    let score = run.latest.take().unwrap_or(Score::Cp(0));
+                    run.evals
+                        .push(PositionEval::from_engine(&score, pos.turn(), best));
+                }
+                self.review_advance();
+            }
+        }
+    }
+
+    /// Progress of the running review, 0 to 1.
+    fn review_progress(&self) -> Option<f32> {
+        self.review_run
+            .as_ref()
+            .map(|run| run.evals.len() as f32 / run.game.positions.len() as f32)
+    }
+
+    /// The finished review, if it still describes the game on the board.
+    fn current_review(&self) -> Option<&Review> {
+        self.review.as_ref().filter(|r| r.matches(&self.game))
+    }
+
     fn poll_engine(&mut self) {
         let Some(engine) = &self.engine else { return };
         // Drain all pending output first so the engine borrow ends before we
@@ -151,6 +282,10 @@ impl ChessyApp {
         let messages: Vec<EngineOutput> = std::iter::from_fn(|| engine.try_recv()).collect();
 
         for msg in messages {
+            if self.review_run.is_some() {
+                self.review_handle(msg);
+                continue;
+            }
             match msg {
                 EngineOutput::Info(info) => self.upsert_engine_line(info),
                 EngineOutput::BestMove(mv_str) => {
@@ -687,6 +822,71 @@ impl ChessyApp {
         self.show_about = open;
     }
 
+    /// Review button, progress, or the finished review's summary and graph.
+    fn show_review_panel(&mut self, ui: &mut Ui, text_col: Color32) {
+        if let Some(progress) = self.review_progress() {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    self.cancel_review();
+                }
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .text(format!("Reviewing… {:.0}%", progress * 100.0)),
+                );
+            });
+            return;
+        }
+
+        let Some(review) = self.current_review() else {
+            ui.add_space(2.0);
+            let enabled = self.engine.is_some() && !self.game.moves.is_empty();
+            if ui
+                .add_enabled(enabled, egui::Button::new("Review Game"))
+                .on_hover_text("Have the engine judge every move of this game")
+                .on_disabled_hover_text("Needs an engine and at least one move")
+                .clicked()
+            {
+                self.start_review();
+            }
+            return;
+        };
+
+        ui.add_space(4.0);
+        let gray = Color32::GRAY;
+        egui::Grid::new("review_summary")
+            .num_columns(5)
+            .spacing([10.0, 2.0])
+            .show(ui, |ui| {
+                for title in ["", "Accuracy", "?!", "?", "??"] {
+                    ui.label(RichText::new(title).small().color(gray));
+                }
+                ui.end_row();
+                for (name, color) in [("White", PieceColor::White), ("Black", PieceColor::Black)] {
+                    let s = review.summary(color);
+                    ui.label(RichText::new(name).small().color(text_col));
+                    ui.label(
+                        RichText::new(format!("{:.1}%", s.accuracy))
+                            .strong()
+                            .color(text_col),
+                    );
+                    for n in [s.inaccuracies, s.mistakes, s.blunders] {
+                        ui.label(RichText::new(n.to_string()).color(text_col));
+                    }
+                    ui.end_row();
+                }
+            });
+
+        ui.add_space(4.0);
+        let jump = show_eval_graph(ui, &review.white_win(), &review.classes(), self.game.cursor);
+        if let Some(idx) = jump
+            && idx != self.game.cursor
+        {
+            self.game.go_to(idx);
+            self.interaction.selected = None;
+        }
+    }
+
     fn show_setup_panel(&mut self, ui: &mut Ui) {
         ui.label(RichText::new("Set Up Position").strong());
         ui.add_space(6.0);
@@ -844,7 +1044,11 @@ impl eframe::App for ChessyApp {
         }
 
         // Restart analysis when cursor moves in analyze mode
-        if self.mode == AppMode::Analyze {
+        // A review owns the engine until it finishes; leaving analysis ends it.
+        if self.review_run.is_some() && self.mode != AppMode::Analyze {
+            self.cancel_review();
+        }
+        if self.mode == AppMode::Analyze && self.review_run.is_none() {
             let current_fen = self.game.current_fen();
             if current_fen != self.last_analyzed_fen {
                 self.start_analysis();
@@ -934,6 +1138,10 @@ impl eframe::App for ChessyApp {
                     show_analysis_panel(ui, &self.engine_lines, &pos, self.settings.dark_theme);
                 }
 
+                if self.mode == AppMode::Analyze {
+                    self.show_review_panel(ui, text_col);
+                }
+
                 ui.separator();
 
                 // Navigation buttons
@@ -967,7 +1175,13 @@ impl eframe::App for ChessyApp {
                 // Move list
                 let available = ui.available_size();
                 ui.allocate_ui(available, |ui| {
-                    if show_moves_panel(ui, &mut self.game, self.settings.dark_theme) {
+                    let classes = self.current_review().map(Review::classes);
+                    if show_moves_panel(
+                        ui,
+                        &mut self.game,
+                        self.settings.dark_theme,
+                        classes.as_deref(),
+                    ) {
                         self.play_nav_sound();
                     }
                 });
