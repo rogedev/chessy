@@ -79,10 +79,11 @@ impl UciClient {
                 if line == "readyok" {
                     let _ = tx_out_clone.send(EngineOutput::Ready);
                 } else if let Some(rest) = line.strip_prefix("bestmove ") {
+                    // Forward every bestmove, including "(none)" for positions
+                    // without legal moves: each search ends with exactly one,
+                    // and the app counts them to tell searches apart.
                     let best = rest.split_whitespace().next().unwrap_or("").to_string();
-                    if !best.is_empty() && best != "(none)" {
-                        let _ = tx_out_clone.send(EngineOutput::BestMove(best));
-                    }
+                    let _ = tx_out_clone.send(EngineOutput::BestMove(best));
                 } else if line.starts_with("info ")
                     && let Some(info) = parse_info(&line)
                 {
