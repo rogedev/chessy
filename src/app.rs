@@ -7,7 +7,11 @@ use shakmaty::{
 
 use crate::{
     audio::AudioPlayer,
-    chess::{Game, pgn},
+    chess::{
+        Game,
+        material::{captured_pieces, material_balance},
+        pgn,
+    },
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
@@ -16,6 +20,7 @@ use crate::{
             BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
             sound_for_move, try_make_promotion_move,
         },
+        captured::show_captured,
         moves::show_moves_panel,
     },
 };
@@ -912,13 +917,34 @@ impl eframe::App for ChessyApp {
                     Color32::from_rgb(30, 30, 30)
                 };
 
+                // Pieces each side has captured, and who is ahead on material.
+                let start_board = self.game.start_position().board();
+                let board = self.game.current_position().board();
+                let white_lost = captured_pieces(start_board, board, PieceColor::White);
+                let black_lost = captured_pieces(start_board, board, PieceColor::Black);
+                let balance = material_balance(board);
+
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
                     ui.label(RichText::new(black).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::White,
+                        &white_lost,
+                        -balance,
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♙ ").color(Color32::WHITE));
                     ui.label(RichText::new(white).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::Black,
+                        &black_lost,
+                        balance,
+                    );
                 });
 
                 ui.separator();
