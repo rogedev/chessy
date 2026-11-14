@@ -68,11 +68,31 @@ impl EngineInfo {
 }
 
 pub enum EngineCmd {
-    SetPosition { fen: String, moves: Vec<String> },
-    Go { depth: u8, multipv: u8 },
-    GoMovetime { ms: u64, multipv: u8 },
+    SetPosition {
+        fen: String,
+        moves: Vec<String>,
+    },
+    Go {
+        depth: u8,
+        multipv: u8,
+    },
+    GoMovetime {
+        ms: u64,
+        multipv: u8,
+    },
+    /// Search with both clocks known, never longer than `max_ms`.
+    GoClock {
+        wtime_ms: u64,
+        btime_ms: u64,
+        winc_ms: u64,
+        binc_ms: u64,
+        max_ms: u64,
+    },
     Stop,
-    SetOption { name: String, value: String },
+    SetOption {
+        name: String,
+        value: String,
+    },
 }
 
 pub enum EngineOutput {

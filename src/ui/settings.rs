@@ -11,6 +11,9 @@ pub struct Settings {
     pub analysis_depth: u8,
     #[serde(default = "default_piece_set")]
     pub piece_set: String,
+    /// Label of a preset in `chess::clock::PRESETS`.
+    #[serde(default = "default_time_control")]
+    pub time_control: String,
 }
 
 impl Default for Settings {
@@ -24,6 +27,7 @@ impl Default for Settings {
             movetime_ms: 2000,
             analysis_depth: 20,
             piece_set: default_piece_set(),
+            time_control: default_time_control(),
         }
     }
 }
@@ -50,6 +54,10 @@ impl Settings {
 
 fn config_path() -> Option<std::path::PathBuf> {
     dirs_next::config_dir().map(|d| d.join("chessy").join("settings.json"))
+}
+
+fn default_time_control() -> String {
+    "Unlimited".to_string()
 }
 
 fn default_piece_set() -> String {
@@ -95,6 +103,8 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.piece_set, "cburnett");
+        // Time control, added later, defaults to playing without a clock.
+        assert_eq!(s.time_control, "Unlimited");
     }
 
     #[test]
