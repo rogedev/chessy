@@ -231,8 +231,16 @@ impl ChessyApp {
         let Some(clock) = &mut self.clock else { return };
 
         let plies = self.game.moves.len();
-        for ply in self.clock_plies..plies {
-            clock.on_move(self.game.positions[ply].turn(), now);
+        // Position `i` is the one move `i` was played from, so its side to
+        // move is the mover.
+        for before in self
+            .game
+            .positions
+            .iter()
+            .take(plies)
+            .skip(self.clock_plies)
+        {
+            clock.on_move(before.turn(), now);
         }
         self.clock_plies = plies;
 
