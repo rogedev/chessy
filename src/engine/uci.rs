@@ -101,8 +101,6 @@ impl UciClient {
         self.rx.try_recv().ok()
     }
 
-    /// Tell the engine which position to search: the game's starting FEN
-    /// and the moves played since.
     pub fn set_position(&self, start_fen: &str, moves: &[String]) {
         self.send(EngineCmd::SetPosition {
             fen: start_fen.to_string(),
@@ -141,9 +139,7 @@ impl UciClient {
     }
 }
 
-/// UCI `position` command: a starting FEN followed by the moves played
-/// from it. The moves must be the ones that lead from `start_fen` to the
-/// position to search, never moves already contained in the FEN.
+/// `moves` must lead from `start_fen`, never repeat moves already in the FEN.
 fn position_command(start_fen: &str, moves: &[String]) -> String {
     let pos_str = if start_fen == "startpos" {
         "startpos".to_string()
