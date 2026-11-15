@@ -1031,7 +1031,8 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    // Against the engine, moves are only made at the end of the game.
+                    AppMode::Play => !self.waiting_for_bestmove && self.game.at_end(),
                     AppMode::Setup => unreachable!(),
                 };
 
