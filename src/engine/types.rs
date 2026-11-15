@@ -80,7 +80,6 @@ pub enum EngineCmd {
         ms: u64,
         multipv: u8,
     },
-    /// Search with both clocks known, never longer than `max_ms`.
     GoClock {
         wtime_ms: u64,
         btime_ms: u64,

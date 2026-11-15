@@ -1,10 +1,5 @@
-//! Chess clock: two countdown timers with an optional per-move increment.
-//! Time is supplied by the caller (seconds from any monotonic source), so
-//! the clock itself is deterministic and easy to test.
-
 use shakmaty::Color;
 
-/// Base time plus increment per move, e.g. 5+3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimeControl {
     pub base_secs: u32,
@@ -20,7 +15,6 @@ impl TimeControl {
     }
 }
 
-/// Label and time control; `None` plays without a clock.
 pub const PRESETS: &[(&str, Option<TimeControl>)] = &[
     ("Unlimited", None),
     ("1+0", Some(TimeControl::new(1, 0))),
@@ -31,7 +25,6 @@ pub const PRESETS: &[(&str, Option<TimeControl>)] = &[
     ("30+0", Some(TimeControl::new(30, 0))),
 ];
 
-/// Look a preset up by label. Unknown labels play without a clock.
 pub fn preset(label: &str) -> Option<TimeControl> {
     PRESETS
         .iter()
@@ -41,12 +34,9 @@ pub fn preset(label: &str) -> Option<TimeControl> {
 
 #[derive(Clone, Debug)]
 pub struct Clock {
-    /// Milliseconds left for White and Black.
     remaining_ms: [i64; 2],
     increment_ms: i64,
-    /// Whose clock is counting down; `None` while stopped.
     running: Option<Color>,
-    /// Time of the last update, in seconds.
     last_tick: f64,
     flagged: Option<Color>,
 }
@@ -82,12 +72,10 @@ impl Clock {
         self.running
     }
 
-    /// The side that ran out of time, if any.
     pub fn flagged(&self) -> Option<Color> {
         self.flagged
     }
 
-    /// Charge the elapsed time to the running side.
     pub fn tick(&mut self, now: f64) {
         if let Some(color) = self.running {
             let elapsed = ((now - self.last_tick) * 1000.0).round() as i64;
@@ -101,9 +89,7 @@ impl Clock {
         self.last_tick = now;
     }
 
-    /// `mover` has just made a move. Their clock stops and gains the
-    /// increment, and the opponent's clock starts. The very first move of a
-    /// game starts the clocks without charging or rewarding anyone.
+    /// The first move of a game starts the clocks without charge or increment.
     pub fn on_move(&mut self, mover: Color, now: f64) {
         if self.flagged.is_some() {
             return;
@@ -119,15 +105,13 @@ impl Clock {
         self.last_tick = now;
     }
 
-    /// Stop both clocks, charging the time used so far.
     pub fn pause(&mut self, now: f64) {
         self.tick(now);
         self.running = None;
     }
 }
 
-/// `m:ss` normally, `h:mm:ss` from an hour up, and tenths of a second in
-/// the last ten seconds (`0:07.4`).
+/// `m:ss`, `h:mm:ss` from an hour up, tenths of a second in the last ten seconds.
 pub fn format_clock(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
@@ -174,7 +158,6 @@ mod tests {
         let mut c = clock(5, 3);
         c.on_move(White, 10.0);
         assert_eq!(c.running(), Some(Black));
-        // No deduction and no increment for the opening move.
         assert_eq!(c.remaining_ms(White), 300_000);
 
         c.tick(14.0);
@@ -206,7 +189,6 @@ mod tests {
         assert_eq!(c.flagged(), Some(Black));
         assert_eq!(c.running(), None);
 
-        // A move arriving after the flag changes nothing.
         c.on_move(Black, 62.0);
         assert_eq!(c.remaining_ms(Black), 0);
         assert_eq!(c.running(), None);
@@ -230,7 +212,6 @@ mod tests {
         c.tick(500.0);
         assert_eq!(c.remaining_ms(Black), 290_000);
 
-        // Resumes with the next move, again without charging the pause.
         c.on_move(Black, 600.0);
         assert_eq!(c.remaining_ms(Black), 290_000);
         assert_eq!(c.running(), Some(White));
