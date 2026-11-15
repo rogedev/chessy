@@ -7,6 +7,7 @@ use shakmaty::{
 };
 
 use super::animation::MoveAnimator;
+use super::arrows::{self, Annotations};
 use crate::audio::SoundEvent;
 use crate::chess::Game;
 
@@ -78,12 +79,57 @@ fn rasterize_svg(
     Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
 }
 
-// Light theme
-const LIGHT_SQ_LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
-const LIGHT_SQ_DARK: Color32 = Color32::from_rgb(181, 136, 99);
-// Dark theme
-const DARK_SQ_LIGHT: Color32 = Color32::from_rgb(118, 150, 86);
-const DARK_SQ_DARK: Color32 = Color32::from_rgb(238, 238, 210);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoardTheme {
+    pub name: &'static str,
+    pub light: Color32,
+    pub dark: Color32,
+}
+
+pub const BOARD_THEMES: &[BoardTheme] = &[
+    BoardTheme {
+        name: "Green",
+        light: Color32::from_rgb(238, 238, 210),
+        dark: Color32::from_rgb(118, 150, 86),
+    },
+    BoardTheme {
+        name: "Brown",
+        light: Color32::from_rgb(240, 217, 181),
+        dark: Color32::from_rgb(181, 136, 99),
+    },
+    BoardTheme {
+        name: "Blue",
+        light: Color32::from_rgb(222, 227, 230),
+        dark: Color32::from_rgb(140, 162, 173),
+    },
+    BoardTheme {
+        name: "Grey",
+        light: Color32::from_rgb(220, 220, 220),
+        dark: Color32::from_rgb(134, 134, 134),
+    },
+];
+
+impl BoardTheme {
+    /// An empty or unknown name means automatic: green with the dark
+    /// interface, brown with the light one.
+    pub fn resolve(name: &str, dark_ui: bool) -> BoardTheme {
+        BOARD_THEMES
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(name))
+            .copied()
+            .unwrap_or(BOARD_THEMES[if dark_ui { 0 } else { 1 }])
+    }
+
+    fn square(&self, is_light: bool) -> Color32 {
+        if is_light { self.light } else { self.dark }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BoardStyle {
+    pub theme: BoardTheme,
+    pub show_coordinates: bool,
+}
 
 const HIGHLIGHT_LAST: Color32 = Color32::from_rgba_premultiplied(255, 255, 0, 80);
 const HIGHLIGHT_SELECTED: Color32 = Color32::from_rgba_premultiplied(20, 85, 30, 120);
@@ -98,23 +144,25 @@ pub struct BoardInteraction {
     pub drag_pos: Option<Pos2>,
     pub pending_promotion: Option<(Square, Square)>,
     pub animator: MoveAnimator,
+    pub annotations: Annotations,
 }
 
 pub struct BoardWidget<'a> {
     game: &'a mut Game,
     flipped: bool,
-    dark_theme: bool,
+    style: BoardStyle,
     interactive: bool,
     interaction: &'a mut BoardInteraction,
     piece_textures: &'a PieceTextures,
     animate: bool,
+    engine_arrow: Option<(Square, Square)>,
 }
 
 impl<'a> BoardWidget<'a> {
     pub fn new(
         game: &'a mut Game,
         flipped: bool,
-        dark_theme: bool,
+        style: BoardStyle,
         interactive: bool,
         interaction: &'a mut BoardInteraction,
         piece_textures: &'a PieceTextures,
@@ -122,17 +170,22 @@ impl<'a> BoardWidget<'a> {
         Self {
             game,
             flipped,
-            dark_theme,
+            style,
             interactive,
             interaction,
             piece_textures,
             animate: true,
+            engine_arrow: None,
         }
     }
 
-    /// Whether pieces slide between squares (on by default).
     pub fn with_animation(mut self, animate: bool) -> Self {
         self.animate = animate;
+        self
+    }
+
+    pub fn with_engine_arrow(mut self, arrow: Option<(Square, Square)>) -> Self {
+        self.engine_arrow = arrow;
         self
     }
 
@@ -158,7 +211,7 @@ impl<'a> BoardWidget<'a> {
             pos.legal_moves()
                 .iter()
                 .filter(|m| m.from() == Some(from))
-                .map(|m| m.to())
+                .map(king_destination)
                 .collect()
         } else {
             vec![]
@@ -189,18 +242,9 @@ impl<'a> BoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                let is_light_sq = (rank_idx + file_idx) % 2 == 0;
-                let sq_color = if self.dark_theme {
-                    if is_light_sq {
-                        DARK_SQ_DARK
-                    } else {
-                        DARK_SQ_LIGHT
-                    }
-                } else if is_light_sq {
-                    LIGHT_SQ_LIGHT
-                } else {
-                    LIGHT_SQ_DARK
-                };
+                // a1 is dark, so odd coordinate sums are light.
+                let is_light_sq = (rank_idx + file_idx) % 2 == 1;
+                let sq_color = self.style.theme.square(is_light_sq);
                 painter.rect_filled(sq_rect, 0.0, sq_color);
 
                 // Highlight layers
@@ -236,7 +280,6 @@ impl<'a> BoardWidget<'a> {
             }
         }
 
-        // Pieces in motion, drawn above everything standing still.
         for (slide, t) in self.interaction.animator.slides(now) {
             if let Some(piece) = board.piece_at(slide.end) {
                 let start = sq_to_rect(slide.start, rect, sq_size, self.flipped);
@@ -250,7 +293,74 @@ impl<'a> BoardWidget<'a> {
         }
 
         // Draw rank/file labels
-        draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
+        if self.style.show_coordinates {
+            draw_labels(&painter, rect, sq_size, self.flipped, self.style.theme);
+        }
+
+        let center = |sq: Square| sq_to_rect(sq, rect, sq_size, self.flipped).center();
+        self.interaction.annotations.sync(board);
+
+        if let Some((from, to)) = self.engine_arrow
+            // Ignore a stale suggestion from another position.
+            && board.piece_at(from).is_some_and(|p| p.color == pos.turn())
+        {
+            arrows::draw_arrow(
+                &painter,
+                center(from),
+                center(to),
+                sq_size,
+                arrows::ENGINE_COLOR,
+            );
+        }
+        for &sq in &self.interaction.annotations.squares {
+            arrows::draw_square_mark(&painter, center(sq), sq_size, arrows::USER_COLOR);
+        }
+        for &(from, to) in &self.interaction.annotations.arrows {
+            arrows::draw_arrow(
+                &painter,
+                center(from),
+                center(to),
+                sq_size,
+                arrows::USER_COLOR,
+            );
+        }
+
+        // Works even when moves are not allowed (engine thinking, game over).
+        let pointer_sq = ui
+            .input(|i| i.pointer.interact_pos())
+            .and_then(|p| pos_to_sq(p, rect, sq_size, self.flipped));
+        let secondary = egui::PointerButton::Secondary;
+
+        if response.drag_started_by(secondary) {
+            self.interaction.annotations.drag_start = ui
+                .input(|i| i.pointer.press_origin())
+                .and_then(|p| pos_to_sq(p, rect, sq_size, self.flipped));
+        }
+        if let Some(from) = self.interaction.annotations.drag_start {
+            if response.drag_stopped_by(secondary) {
+                self.interaction.annotations.drag_start = None;
+                if let Some(to) = pointer_sq {
+                    self.interaction.annotations.toggle(from, to, board);
+                }
+            } else if let Some(to) = pointer_sq {
+                arrows::draw_arrow(
+                    &painter,
+                    center(from),
+                    center(to),
+                    sq_size,
+                    arrows::USER_COLOR,
+                );
+            }
+        } else if response.secondary_clicked()
+            && let Some(sq) = pointer_sq
+        {
+            self.interaction.annotations.toggle(sq, sq, board);
+        }
+
+        let primary = egui::PointerButton::Primary;
+        if response.clicked() || response.drag_started_by(primary) {
+            self.interaction.annotations.clear();
+        }
 
         // Draw dragged piece at cursor
         if let (Some(from_sq), Some(cursor_pos)) =
@@ -261,8 +371,10 @@ impl<'a> BoardWidget<'a> {
             draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
         }
 
+        // Moves may be made from any position of the game: playing one in
+        // the middle starts a variation. The caller decides when that is
+        // not wanted (for example while playing the engine).
         let can_interact = self.interactive
-            && self.game.at_end()
             && !self.game.is_game_over()
             && self.interaction.pending_promotion.is_none();
 
@@ -270,7 +382,7 @@ impl<'a> BoardWidget<'a> {
 
         if can_interact {
             // Update drag position
-            if response.dragged()
+            if response.dragged_by(primary)
                 && let Some(ptr) = response.interact_pointer_pos()
             {
                 self.interaction.drag_pos = Some(ptr);
@@ -285,7 +397,7 @@ impl<'a> BoardWidget<'a> {
                 }
             }
 
-            if response.drag_stopped() {
+            if response.drag_stopped_by(primary) {
                 if let (Some(from), Some(ptr)) =
                     (self.interaction.drag_from, self.interaction.drag_pos)
                     && let Some(to) = pos_to_sq(ptr, rect, sq_size, self.flipped)
@@ -294,7 +406,6 @@ impl<'a> BoardWidget<'a> {
                         self.interaction.pending_promotion = Some((from, to));
                     } else {
                         pending_sound = try_make_move(self.game, from, to);
-                        // The piece was carried to its square by hand.
                         self.interaction.animator.skip_next = pending_sound.is_some();
                     }
                 }
@@ -335,7 +446,7 @@ fn sq_to_rect(sq: Square, board_rect: Rect, sq_size: f32, flipped: bool) -> Rect
 pub struct SetupBoardWidget<'a> {
     board: &'a mut Board,
     flipped: bool,
-    dark_theme: bool,
+    style: BoardStyle,
     palette: Option<Piece>,
     piece_textures: &'a PieceTextures,
 }
@@ -344,14 +455,14 @@ impl<'a> SetupBoardWidget<'a> {
     pub fn new(
         board: &'a mut Board,
         flipped: bool,
-        dark_theme: bool,
+        style: BoardStyle,
         palette: Option<Piece>,
         piece_textures: &'a PieceTextures,
     ) -> Self {
         Self {
             board,
             flipped,
-            dark_theme,
+            style,
             palette,
             piece_textures,
         }
@@ -371,18 +482,9 @@ impl<'a> SetupBoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                let is_light_sq = (rank_idx + file_idx) % 2 == 0;
-                let sq_color = if self.dark_theme {
-                    if is_light_sq {
-                        DARK_SQ_DARK
-                    } else {
-                        DARK_SQ_LIGHT
-                    }
-                } else if is_light_sq {
-                    LIGHT_SQ_LIGHT
-                } else {
-                    LIGHT_SQ_DARK
-                };
+                // a1 is dark, so odd coordinate sums are light.
+                let is_light_sq = (rank_idx + file_idx) % 2 == 1;
+                let sq_color = self.style.theme.square(is_light_sq);
 
                 painter.rect_filled(sq_rect, 0.0, sq_color);
 
@@ -392,7 +494,9 @@ impl<'a> SetupBoardWidget<'a> {
             }
         }
 
-        draw_labels(&painter, rect, sq_size, self.flipped, self.dark_theme);
+        if self.style.show_coordinates {
+            draw_labels(&painter, rect, sq_size, self.flipped, self.style.theme);
+        }
 
         if response.secondary_clicked()
             && let Some(ptr) = response.interact_pointer_pos()
@@ -477,6 +581,21 @@ fn handle_click(
     None
 }
 
+/// shakmaty encodes castling as "king takes own rook"; this returns the
+/// king's real destination (g1, c1, g8, c8) instead.
+fn king_destination(m: &Move) -> Square {
+    match (m, m.castling_side()) {
+        (Move::Castle { king, .. }, Some(side)) => {
+            side.king_to(PieceColor::from_white(king.rank() == Rank::First))
+        }
+        _ => m.to(),
+    }
+}
+
+fn lands_on(m: &Move, to: Square) -> bool {
+    m.to() == to || king_destination(m) == to
+}
+
 fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
     game.current_position().legal_moves().iter().any(|m| {
         m.from() == Some(from)
@@ -492,6 +611,10 @@ fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
 }
 
 pub(crate) fn sound_for_move(m: &Move, resulting_pos: &Chess) -> SoundEvent {
+    if resulting_pos.is_checkmate() {
+        return SoundEvent::Checkmate;
+    }
+
     if resulting_pos.is_stalemate() || resulting_pos.is_insufficient_material() {
         return SoundEvent::Draw;
     }
@@ -524,7 +647,7 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent
     let legals = game.current_position().legal_moves();
     let m = legals.iter().find(|m| {
         m.from() == Some(from)
-            && m.to() == to
+            && lands_on(m, to)
             && !matches!(
                 m,
                 Move::Normal {
@@ -545,22 +668,25 @@ fn draw_piece(painter: &Painter, rect: Rect, texture: Option<&TextureHandle>) {
     }
 }
 
-fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool, dark_theme: bool) {
-    let label_color = if dark_theme {
-        Color32::from_rgb(180, 180, 180)
-    } else {
-        Color32::from_rgb(100, 100, 100)
-    };
-
+fn draw_labels(
+    painter: &Painter,
+    board_rect: Rect,
+    sq_size: f32,
+    flipped: bool,
+    theme: BoardTheme,
+) {
     let font = FontId::proportional(sq_size * 0.2);
 
     let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
     for i in 0..8 {
+        // Labels take the opposite square's colour so they stay legible.
+        let label_color = theme.square(i % 2 == 0);
+
         let file_char = if flipped { files[7 - i] } else { files[i] };
         let x = board_rect.min.x + i as f32 * sq_size + sq_size * 0.05;
-        let y = board_rect.max.y - sq_size * 0.22;
+        let y = board_rect.max.y - sq_size * 0.14;
         painter.text(
             Pos2::new(x, y),
             Align2::LEFT_CENTER,
@@ -570,8 +696,8 @@ fn draw_labels(painter: &Painter, board_rect: Rect, sq_size: f32, flipped: bool,
         );
 
         let rank_char = if flipped { ranks[i] } else { ranks[7 - i] };
-        let x2 = board_rect.max.x - sq_size * 0.18;
-        let y2 = board_rect.min.y + i as f32 * sq_size + sq_size * 0.12;
+        let x2 = board_rect.max.x - sq_size * 0.1;
+        let y2 = board_rect.min.y + i as f32 * sq_size + sq_size * 0.05;
         painter.text(
             Pos2::new(x2, y2),
             Align2::CENTER_TOP,
@@ -743,8 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn sound_for_move_checkmate_plays_move_sound() {
-        // Fool's mate: checkmate plays Move sound (same as regular moves)
+    fn sound_for_move_checkmate() {
         let pos = pos_from_fen("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
         let m = pos
             .legal_moves()
@@ -754,7 +879,7 @@ mod tests {
         let mut next = pos.clone();
         next.play_unchecked(m);
         assert!(next.is_checkmate(), "expected checkmate");
-        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Checkmate));
     }
 
     #[test]
@@ -770,5 +895,88 @@ mod tests {
         next.play_unchecked(m);
         assert!(next.is_stalemate(), "expected stalemate");
         assert!(matches!(sound_for_move(&m, &next), SoundEvent::Draw));
+    }
+
+    #[test]
+    fn board_theme_resolves_by_name_case_insensitively() {
+        assert_eq!(BoardTheme::resolve("Blue", true).name, "Blue");
+        assert_eq!(BoardTheme::resolve("blue", false).name, "Blue");
+        assert_eq!(BoardTheme::resolve("GREY", true).name, "Grey");
+    }
+
+    #[test]
+    fn board_theme_auto_follows_interface_theme() {
+        assert_eq!(BoardTheme::resolve("", true).name, "Green");
+        assert_eq!(BoardTheme::resolve("", false).name, "Brown");
+        assert_eq!(BoardTheme::resolve("no-such-theme", true).name, "Green");
+    }
+
+    #[test]
+    fn board_themes_have_unique_names_and_distinct_squares() {
+        let mut seen = std::collections::HashSet::new();
+        for theme in BOARD_THEMES {
+            assert!(seen.insert(theme.name), "duplicate theme {}", theme.name);
+            assert_ne!(
+                theme.light, theme.dark,
+                "{} has identical squares",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn theme_square_picks_light_or_dark() {
+        let t = BOARD_THEMES[0];
+        assert_eq!(t.square(true), t.light);
+        assert_eq!(t.square(false), t.dark);
+    }
+
+    const CASTLE_BOTH: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+
+    #[test]
+    fn castles_by_moving_king_two_squares() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_some());
+        assert_eq!(game.san, vec!["O-O"]);
+
+        assert!(try_make_move(&mut game, Square::E8, Square::C8).is_some());
+        assert_eq!(game.san, vec!["O-O", "O-O-O"]);
+    }
+
+    #[test]
+    fn castles_by_moving_king_onto_rook() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::A1).is_some());
+        assert_eq!(game.san, vec!["O-O-O"]);
+    }
+
+    #[test]
+    fn king_step_next_to_castling_square_is_still_a_king_move() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::F1).is_some());
+        assert_eq!(game.san, vec!["Kf1"]);
+    }
+
+    #[test]
+    fn castling_hint_is_on_the_kings_destination() {
+        let game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        let dests: Vec<Square> = game
+            .current_position()
+            .legal_moves()
+            .iter()
+            .filter(|m| m.from() == Some(Square::E1))
+            .map(king_destination)
+            .collect();
+        assert!(dests.contains(&Square::G1));
+        assert!(dests.contains(&Square::C1));
+        assert!(!dests.contains(&Square::H1));
+        assert!(!dests.contains(&Square::A1));
+    }
+
+    #[test]
+    fn no_castling_through_the_click_when_it_is_illegal() {
+        let mut game = Game::from_fen("4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1").expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_none());
+        assert_eq!(game.cursor, 0);
     }
 }

@@ -1,22 +1,17 @@
-//! Sliding pieces between squares when a move is played or stepped through.
-
 use shakmaty::{Board, Color, Move, Position, Rank, Square};
 
 use crate::chess::Game;
 
-/// How long a piece takes to slide, in seconds.
 pub const DURATION: f64 = 0.15;
 
-/// One piece in motion: it is drawn travelling from `start` to `end`, where
-/// `end` is the square it occupies on the board being displayed.
+/// `end` is the square the piece occupies on the board being displayed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slide {
     pub start: Square,
     pub end: Square,
 }
 
-/// The pieces that move for `m`. Castling moves both king and rook. With
-/// `forward` false the move is being taken back, so every slide is reversed.
+/// Castling moves both king and rook. With `forward` false every slide is reversed.
 pub fn slides_for(m: &Move, forward: bool) -> Vec<Slide> {
     let mut slides = match *m {
         Move::Castle { king, rook } => {
@@ -54,27 +49,22 @@ pub fn slides_for(m: &Move, forward: bool) -> Vec<Slide> {
     slides
 }
 
-/// Decelerating curve: fast at first, settling into the square.
 pub fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Tracks what the board showed last frame and the animation in progress.
 #[derive(Default)]
 pub struct MoveAnimator {
-    /// Cursor and board displayed on the previous frame.
     seen: Option<(usize, Board)>,
     slides: Vec<Slide>,
     started: f64,
-    /// Set when the user dropped a piece by hand: it is already where it
-    /// belongs, so the next position change must not be animated.
+    /// Set when a piece was dropped by hand, so the next change is not animated.
     pub skip_next: bool,
 }
 
 impl MoveAnimator {
-    /// Call once per frame. Starts an animation when the game has stepped
-    /// exactly one move forward or back from what was last shown.
+    /// Call once per frame. Animates only a single step forward or back.
     pub fn update(&mut self, game: &Game, now: f64, enabled: bool) {
         let board = game.current_position().board();
         let cursor = game.cursor;
@@ -110,21 +100,17 @@ impl MoveAnimator {
         !self.slides.is_empty()
     }
 
-    /// Slides in progress with their eased progress in `0.0..=1.0`.
     pub fn slides(&self, now: f64) -> impl Iterator<Item = (Slide, f32)> + '_ {
         let t = ease_out(((now - self.started) / DURATION) as f32);
         self.slides.iter().map(move |s| (*s, t))
     }
 
-    /// Whether the piece standing on `sq` is currently drawn in motion.
     pub fn hides(&self, sq: Square) -> bool {
         self.slides.iter().any(|s| s.end == sq)
     }
 }
 
-/// If the game moved exactly one ply from the previously shown position,
-/// return that move and its direction. Jumps, new games and loaded games
-/// return `None`.
+/// The move and direction when the game moved exactly one ply, else `None`.
 fn step_between(game: &Game, prev_cursor: usize, prev_board: &Board) -> Option<(Move, bool)> {
     let cursor = game.cursor;
     let shown = |idx: usize| game.positions.get(idx).map(|p| p.board());
@@ -260,19 +246,16 @@ mod tests {
         let mut a = MoveAnimator::default();
         a.update(&g, 0.0, true);
 
-        // A different game one ply longer: the cursor is one ahead, but the
-        // previous position is not the one that was on the board.
+        // A different game one ply longer: the previous board does not match.
         let other = play(&["d2d4", "d7d5", "c2c4", "e7e6"]);
         a.update(&other, 1.0, true);
         assert!(!a.is_active());
 
-        // Jump of several plies within the same game.
         let mut other = other;
         other.go_to_start();
         a.update(&other, 2.0, true);
         assert!(!a.is_active());
 
-        // Disabled in settings.
         let mut g = Game::new();
         let mut a = MoveAnimator::default();
         a.update(&g, 0.0, false);
@@ -292,7 +275,6 @@ mod tests {
         a.update(&g, 1.0, true);
         assert!(!a.is_active());
 
-        // The reply is animated as usual.
         g.make_uci_move("e7e5").expect("legal");
         a.update(&g, 2.0, true);
         assert!(a.is_active());
