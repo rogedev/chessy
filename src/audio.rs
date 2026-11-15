@@ -6,8 +6,7 @@ pub enum SoundEvent {
     Move,
     Capture,
     Draw,
-    /// The move delivered checkmate. The app turns this into `Victory` or
-    /// `Defeat` depending on who is playing.
+    /// The app maps this to `Victory` or `Defeat`.
     Checkmate,
     Victory,
     Defeat,
