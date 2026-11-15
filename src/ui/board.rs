@@ -232,8 +232,10 @@ impl<'a> BoardWidget<'a> {
             draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
         }
 
+        // Moves may be made from any position of the game: playing one in
+        // the middle starts a variation. The caller decides when that is
+        // not wanted (for example while playing the engine).
         let can_interact = self.interactive
-            && self.game.at_end()
             && !self.game.is_game_over()
             && self.interaction.pending_promotion.is_none();
 
@@ -446,9 +448,8 @@ fn handle_click(
     None
 }
 
-/// Where the moving piece ends up. shakmaty encodes castling as "king takes
-/// own rook", so for castling this is the king's real destination (g1, c1,
-/// g8 or c8) rather than the rook's square.
+/// shakmaty encodes castling as "king takes own rook"; this returns the
+/// king's real destination (g1, c1, g8, c8) instead.
 fn king_destination(m: &Move) -> Square {
     match (m, m.castling_side()) {
         (Move::Castle { king, .. }, Some(side)) => {
@@ -458,8 +459,6 @@ fn king_destination(m: &Move) -> Square {
     }
 }
 
-/// Whether choosing `to` as the target selects move `m`. Castling accepts
-/// both the king's destination and the rook's square.
 fn lands_on(m: &Move, to: Square) -> bool {
     m.to() == to || king_destination(m) == to
 }
@@ -803,7 +802,6 @@ mod tests {
 
     #[test]
     fn no_castling_through_the_click_when_it_is_illegal() {
-        // Black rook on f8 covers f1, so White may not castle short.
         let mut game = Game::from_fen("4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1").expect("valid fen");
         assert!(try_make_move(&mut game, Square::E1, Square::G1).is_none());
         assert_eq!(game.cursor, 0);
