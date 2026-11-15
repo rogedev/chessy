@@ -11,7 +11,6 @@ pub struct Settings {
     pub analysis_depth: u8,
     #[serde(default = "default_piece_set")]
     pub piece_set: String,
-    /// Name of a board colour theme; empty means follow the interface theme.
     #[serde(default)]
     pub board_theme: String,
     #[serde(default = "default_true")]
@@ -106,7 +105,6 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.piece_set, "cburnett");
-        // Fields added later also fall back to their defaults.
         assert_eq!(s.board_theme, "");
         assert!(s.show_coordinates);
     }

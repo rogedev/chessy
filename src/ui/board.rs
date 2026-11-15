@@ -77,7 +77,6 @@ fn rasterize_svg(
     Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
 }
 
-/// A named pair of square colours.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoardTheme {
     pub name: &'static str,
@@ -109,9 +108,8 @@ pub const BOARD_THEMES: &[BoardTheme] = &[
 ];
 
 impl BoardTheme {
-    /// Look a theme up by name. An empty or unknown name means "automatic":
-    /// green with the dark interface and brown with the light one, which is
-    /// how the board looked before themes were selectable.
+    /// An empty or unknown name means automatic: green with the dark
+    /// interface, brown with the light one.
     pub fn resolve(name: &str, dark_ui: bool) -> BoardTheme {
         BOARD_THEMES
             .iter()
@@ -125,7 +123,6 @@ impl BoardTheme {
     }
 }
 
-/// How the board is drawn: colours and whether coordinates are shown.
 #[derive(Clone, Copy)]
 pub struct BoardStyle {
     pub theme: BoardTheme,
@@ -191,7 +188,7 @@ impl<'a> BoardWidget<'a> {
             pos.legal_moves()
                 .iter()
                 .filter(|m| m.from() == Some(from))
-                .map(|m| m.to())
+                .map(king_destination)
                 .collect()
         } else {
             vec![]
@@ -222,7 +219,7 @@ impl<'a> BoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                // a1 (0, 0) is a dark square, so odd coordinate sums are light.
+                // a1 is dark, so odd coordinate sums are light.
                 let is_light_sq = (rank_idx + file_idx) % 2 == 1;
                 let sq_color = self.style.theme.square(is_light_sq);
                 painter.rect_filled(sq_rect, 0.0, sq_color);
@@ -273,8 +270,10 @@ impl<'a> BoardWidget<'a> {
             draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
         }
 
+        // Moves may be made from any position of the game: playing one in
+        // the middle starts a variation. The caller decides when that is
+        // not wanted (for example while playing the engine).
         let can_interact = self.interactive
-            && self.game.at_end()
             && !self.game.is_game_over()
             && self.interaction.pending_promotion.is_none();
 
@@ -381,7 +380,7 @@ impl<'a> SetupBoardWidget<'a> {
                 let sq = Square::from_coords(File::new(file_idx), Rank::new(rank_idx));
                 let sq_rect = sq_to_rect(sq, rect, sq_size, self.flipped);
 
-                // a1 (0, 0) is a dark square, so odd coordinate sums are light.
+                // a1 is dark, so odd coordinate sums are light.
                 let is_light_sq = (rank_idx + file_idx) % 2 == 1;
                 let sq_color = self.style.theme.square(is_light_sq);
 
@@ -480,6 +479,21 @@ fn handle_click(
     None
 }
 
+/// shakmaty encodes castling as "king takes own rook"; this returns the
+/// king's real destination (g1, c1, g8, c8) instead.
+fn king_destination(m: &Move) -> Square {
+    match (m, m.castling_side()) {
+        (Move::Castle { king, .. }, Some(side)) => {
+            side.king_to(PieceColor::from_white(king.rank() == Rank::First))
+        }
+        _ => m.to(),
+    }
+}
+
+fn lands_on(m: &Move, to: Square) -> bool {
+    m.to() == to || king_destination(m) == to
+}
+
 fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
     game.current_position().legal_moves().iter().any(|m| {
         m.from() == Some(from)
@@ -495,6 +509,10 @@ fn is_promotion_move(game: &Game, from: Square, to: Square) -> bool {
 }
 
 pub(crate) fn sound_for_move(m: &Move, resulting_pos: &Chess) -> SoundEvent {
+    if resulting_pos.is_checkmate() {
+        return SoundEvent::Checkmate;
+    }
+
     if resulting_pos.is_stalemate() || resulting_pos.is_insufficient_material() {
         return SoundEvent::Draw;
     }
@@ -527,7 +545,7 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent
     let legals = game.current_position().legal_moves();
     let m = legals.iter().find(|m| {
         m.from() == Some(from)
-            && m.to() == to
+            && lands_on(m, to)
             && !matches!(
                 m,
                 Move::Normal {
@@ -561,9 +579,7 @@ fn draw_labels(
     let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
     for i in 0..8 {
-        // Along the bottom row and the right column the squares alternate
-        // starting dark at index 0, whichever way the board faces. Each
-        // label takes the colour of the opposite square so it stays legible.
+        // Labels take the opposite square's colour so they stay legible.
         let label_color = theme.square(i % 2 == 0);
 
         let file_char = if flipped { files[7 - i] } else { files[i] };
@@ -751,8 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn sound_for_move_checkmate_plays_move_sound() {
-        // Fool's mate: checkmate plays Move sound (same as regular moves)
+    fn sound_for_move_checkmate() {
         let pos = pos_from_fen("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
         let m = pos
             .legal_moves()
@@ -762,7 +777,7 @@ mod tests {
         let mut next = pos.clone();
         next.play_unchecked(m);
         assert!(next.is_checkmate(), "expected checkmate");
-        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Move));
+        assert!(matches!(sound_for_move(&m, &next), SoundEvent::Checkmate));
     }
 
     #[test]
@@ -789,7 +804,6 @@ mod tests {
 
     #[test]
     fn board_theme_auto_follows_interface_theme() {
-        // Empty or unknown names keep the pre-existing look.
         assert_eq!(BoardTheme::resolve("", true).name, "Green");
         assert_eq!(BoardTheme::resolve("", false).name, "Brown");
         assert_eq!(BoardTheme::resolve("no-such-theme", true).name, "Green");
@@ -813,5 +827,54 @@ mod tests {
         let t = BOARD_THEMES[0];
         assert_eq!(t.square(true), t.light);
         assert_eq!(t.square(false), t.dark);
+    }
+
+    const CASTLE_BOTH: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+
+    #[test]
+    fn castles_by_moving_king_two_squares() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_some());
+        assert_eq!(game.san, vec!["O-O"]);
+
+        assert!(try_make_move(&mut game, Square::E8, Square::C8).is_some());
+        assert_eq!(game.san, vec!["O-O", "O-O-O"]);
+    }
+
+    #[test]
+    fn castles_by_moving_king_onto_rook() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::A1).is_some());
+        assert_eq!(game.san, vec!["O-O-O"]);
+    }
+
+    #[test]
+    fn king_step_next_to_castling_square_is_still_a_king_move() {
+        let mut game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::F1).is_some());
+        assert_eq!(game.san, vec!["Kf1"]);
+    }
+
+    #[test]
+    fn castling_hint_is_on_the_kings_destination() {
+        let game = Game::from_fen(CASTLE_BOTH).expect("valid fen");
+        let dests: Vec<Square> = game
+            .current_position()
+            .legal_moves()
+            .iter()
+            .filter(|m| m.from() == Some(Square::E1))
+            .map(king_destination)
+            .collect();
+        assert!(dests.contains(&Square::G1));
+        assert!(dests.contains(&Square::C1));
+        assert!(!dests.contains(&Square::H1));
+        assert!(!dests.contains(&Square::A1));
+    }
+
+    #[test]
+    fn no_castling_through_the_click_when_it_is_illegal() {
+        let mut game = Game::from_fen("4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1").expect("valid fen");
+        assert!(try_make_move(&mut game, Square::E1, Square::G1).is_none());
+        assert_eq!(game.cursor, 0);
     }
 }
