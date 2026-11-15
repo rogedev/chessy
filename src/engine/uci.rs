@@ -32,18 +32,7 @@ impl UciClient {
         thread::spawn(move || {
             for cmd in rx_cmd {
                 let line = match cmd {
-                    EngineCmd::SetPosition { fen, moves } => {
-                        let pos_str = if fen == "startpos" {
-                            "startpos".to_string()
-                        } else {
-                            format!("fen {}", fen)
-                        };
-                        if moves.is_empty() {
-                            format!("position {}", pos_str)
-                        } else {
-                            format!("position {} moves {}", pos_str, moves.join(" "))
-                        }
-                    }
+                    EngineCmd::SetPosition { fen, moves } => position_command(&fen, &moves),
                     EngineCmd::Go { depth, multipv } => {
                         format!(
                             "setoption name MultiPV value {}\ngo depth {}",
@@ -79,9 +68,7 @@ impl UciClient {
                 if line == "readyok" {
                     let _ = tx_out_clone.send(EngineOutput::Ready);
                 } else if let Some(rest) = line.strip_prefix("bestmove ") {
-                    // Forward every bestmove, including "(none)" for positions
-                    // without legal moves: each search ends with exactly one,
-                    // and the app counts them to tell searches apart.
+                    // Forward "(none)" too: the app counts one bestmove per search.
                     let best = rest.split_whitespace().next().unwrap_or("").to_string();
                     let _ = tx_out_clone.send(EngineOutput::BestMove(best));
                 } else if line.starts_with("info ")
@@ -113,9 +100,9 @@ impl UciClient {
         self.rx.try_recv().ok()
     }
 
-    pub fn set_position(&self, fen: &str, moves: &[String]) {
+    pub fn set_position(&self, start_fen: &str, moves: &[String]) {
         self.send(EngineCmd::SetPosition {
-            fen: fen.to_string(),
+            fen: start_fen.to_string(),
             moves: moves.to_vec(),
         });
     }
@@ -148,6 +135,20 @@ impl UciClient {
             name: "UCI_LimitStrength".to_string(),
             value: "false".to_string(),
         });
+    }
+}
+
+/// `moves` must lead from `start_fen`, never repeat moves already in the FEN.
+fn position_command(start_fen: &str, moves: &[String]) -> String {
+    let pos_str = if start_fen == "startpos" {
+        "startpos".to_string()
+    } else {
+        format!("fen {}", start_fen)
+    };
+    if moves.is_empty() {
+        format!("position {}", pos_str)
+    } else {
+        format!("position {} moves {}", pos_str, moves.join(" "))
     }
 }
 
@@ -211,6 +212,11 @@ fn parse_info(line: &str) -> Option<EngineInfo> {
         }
     }
 
+    // Progress lines (currmove, nodes) have no pv and would blank the first line.
+    if pv.is_empty() {
+        return None;
+    }
+
     Some(EngineInfo {
         depth,
         score: score.unwrap_or(Score::Cp(0)),
@@ -258,5 +264,26 @@ mod tests {
     fn missing_score_defaults_to_zero_cp() {
         let info = parse_info("info depth 5 pv e2e4").expect("should parse");
         assert!(matches!(info.score, Score::Cp(0)));
+    }
+
+    #[test]
+    fn ignores_progress_lines_without_a_pv() {
+        assert!(parse_info("info depth 20 currmove e2e4 currmovenumber 1").is_none());
+        assert!(parse_info("info nodes 120000 nps 1200000 hashfull 12 time 100").is_none());
+        assert!(parse_info("info string NNUE evaluation enabled").is_none());
+    }
+
+    #[test]
+    fn position_command_formats_fen_and_moves() {
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        assert_eq!(position_command(fen, &[]), format!("position fen {fen}"));
+        assert_eq!(
+            position_command(fen, &["g1f3".to_string(), "g8f6".to_string()]),
+            format!("position fen {fen} moves g1f3 g8f6")
+        );
+        assert_eq!(
+            position_command("startpos", &["e2e4".to_string()]),
+            "position startpos moves e2e4"
+        );
     }
 }
