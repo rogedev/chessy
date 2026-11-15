@@ -23,13 +23,11 @@ pub struct Opening {
 
 pub struct OpeningBook {
     by_position: HashMap<String, Opening>,
-    /// Longest line in the book, in plies. Positions deeper than this can
-    /// never match, which bounds the work done per lookup.
+    /// Longest line in the book, in plies; deeper positions are not looked up.
     max_ply: usize,
 }
 
 impl OpeningBook {
-    /// The built-in book, parsed once on first use.
     pub fn builtin() -> &'static OpeningBook {
         static BOOK: OnceLock<OpeningBook> = OnceLock::new();
         BOOK.get_or_init(|| OpeningBook::from_tsv(TABLES.iter().copied()))
@@ -68,7 +66,6 @@ impl OpeningBook {
         self.by_position.len()
     }
 
-    /// The most specific named opening reached at or before the cursor.
     pub fn lookup(&self, game: &Game) -> Option<&Opening> {
         let last = game.cursor.min(self.max_ply);
         game.positions[..=last]
@@ -78,9 +75,6 @@ impl OpeningBook {
     }
 }
 
-/// Play a movetext line such as `1. e4 e5 2. Nf3` from the start position.
-/// Returns the final position and the number of plies, or `None` if any
-/// token is not a legal move (or there are no moves at all).
 fn play_line(pgn: &str) -> Option<(Chess, usize)> {
     let mut pos = Chess::default();
     let mut plies = 0;
@@ -159,7 +153,6 @@ mod tests {
 
     #[test]
     fn transposition_gets_the_same_name() {
-        // Queen's Gambit Declined reached through 1. c4 e6 2. d4 d5.
         let direct = game(&["d2d4", "d7d5", "c2c4", "e7e6"]);
         let transposed = game(&["c2c4", "e7e6", "d2d4", "d7d5"]);
         assert!(name_of(&direct).is_some());
@@ -172,7 +165,6 @@ mod tests {
         let deep = name_of(&g).expect("still named");
         assert!(deep.contains("Sicilian"), "got {deep}");
 
-        // Stepping back to before 1... c5 changes the name.
         g.go_to(1);
         assert_eq!(name_of(&g).as_deref(), Some("B00 King's Pawn Game"));
     }
