@@ -734,7 +734,6 @@ mod tests {
 
     #[test]
     fn sound_for_move_checkmate() {
-        // Fool's mate
         let pos = pos_from_fen("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
         let m = pos
             .legal_moves()
