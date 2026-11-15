@@ -80,9 +80,14 @@ pub enum EngineCmd {
         ms: u64,
         multipv: u8,
     },
+    GoClock {
+        wtime_ms: u64,
+        btime_ms: u64,
+        winc_ms: u64,
+        binc_ms: u64,
+        max_ms: u64,
+    },
     Stop,
-    /// Ask for `readyok`: everything the engine printed before it belongs
-    /// to earlier commands.
     IsReady,
     SetOption {
         name: String,

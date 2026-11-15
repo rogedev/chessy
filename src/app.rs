@@ -6,21 +6,28 @@ use shakmaty::{
 };
 
 use crate::{
-    audio::AudioPlayer,
+    audio::{AudioPlayer, SoundEvent},
     chess::{
-        Game, pgn,
-        review::{PositionEval, Review, start_fen},
+        Game, Outcome,
+        clock::{self, Clock, format_clock},
+        material::{captured_pieces, material_balance},
+        openings::OpeningBook,
+        pgn,
+        review::{PositionEval, Review},
     },
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
+        arrows::uci_squares,
         board::{
-            BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
-            sound_for_move, try_make_promotion_move,
+            BOARD_THEMES, BoardInteraction, BoardStyle, BoardTheme, BoardWidget, PieceTextures,
+            SetupBoardWidget, available_piece_sets, sound_for_move, try_make_promotion_move,
         },
+        captured::show_captured,
         graph::show_eval_graph,
         moves::show_moves_panel,
+        picker::show_game_picker,
     },
 };
 
@@ -30,6 +37,12 @@ const SHORTCUT_OPEN_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::O);
 const SHORTCUT_SAVE_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S);
+const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    Key::C,
+);
+
+const HINT_MOVETIME_MS: u64 = 1500;
 
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
@@ -39,19 +52,14 @@ const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Strong", 2400),
 ];
 
-/// Search depth used for every position during a game review.
 const REVIEW_DEPTH: u8 = 14;
 
-/// A game review in progress: the engine evaluates one position at a time.
 struct ReviewRun {
-    /// The game being reviewed, frozen so edits cannot disturb the run.
     game: Game,
     start_fen: String,
-    /// Evaluations gathered so far; the next position to search is `evals.len()`.
     evals: Vec<PositionEval>,
-    /// Latest score reported for the position being searched.
     latest: Option<Score>,
-    /// False until the engine confirms it has finished earlier work.
+    /// False until `readyok`: earlier output belongs to the interrupted analysis.
     ready: bool,
 }
 
@@ -85,6 +93,19 @@ pub struct ChessyApp {
     setup_error: Option<String>,
     review_run: Option<ReviewRun>,
     review: Option<Review>,
+    clock: Option<Clock>,
+    clock_plies: usize,
+    now: f64,
+    /// Abandoned searches whose output must be ignored when it arrives.
+    stale_searches: u32,
+    waiting_for_hint: bool,
+    hint: Option<(Square, Square, String)>,
+    resigned: Option<PieceColor>,
+    resign_armed: bool,
+    pgn_games: Vec<Game>,
+    pgn_current: Option<usize>,
+    pgn_filter: String,
+    show_game_picker: bool,
 }
 
 impl ChessyApp {
@@ -117,9 +138,35 @@ impl ChessyApp {
             setup_error: None,
             review_run: None,
             review: None,
+            clock: None,
+            clock_plies: 0,
+            now: 0.0,
+            stale_searches: 0,
+            waiting_for_hint: false,
+            hint: None,
+            resigned: None,
+            resign_armed: false,
+            pgn_games: vec![],
+            pgn_current: None,
+            pgn_filter: String::new(),
+            show_game_picker: false,
         };
+
+        if let Some(arg) = std::env::args().nth(1)
+            && let Ok(games) = pgn::load_pgn(Path::new(&arg))
+        {
+            app.open_games(games);
+        }
+
         app.start_analysis();
         app
+    }
+
+    fn board_style(&self) -> BoardStyle {
+        BoardStyle {
+            theme: BoardTheme::resolve(&self.settings.board_theme, self.settings.dark_theme),
+            show_coordinates: self.settings.show_coordinates,
+        }
     }
 
     fn reconnect_engine(&mut self) {
@@ -127,6 +174,9 @@ impl ChessyApp {
         self.engine_lines.clear();
         self.eval_score = None;
         self.engine_running = false;
+        self.stale_searches = 0;
+        self.waiting_for_bestmove = false;
+        self.waiting_for_hint = false;
         if let Some(engine) = &self.engine {
             if self.settings.limit_strength {
                 engine.set_elo(self.settings.engine_elo);
@@ -137,8 +187,6 @@ impl ChessyApp {
     }
 
     fn start_analysis(&mut self) {
-        // Anything that restarts analysis (new game, loaded game, engine
-        // settings) abandons a review in progress.
         self.review_run = None;
         let Some(engine) = &self.engine else { return };
         let fen = self.game.current_fen();
@@ -146,8 +194,11 @@ impl ChessyApp {
             return;
         }
         let uci_moves = self.game.uci_moves_to_cursor();
-        engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        if self.engine_running {
+            engine.stop();
+            self.stale_searches += 1;
+        }
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         engine.go_depth(self.settings.analysis_depth, self.settings.multipv);
         self.engine_running = true;
         self.last_analyzed_fen = fen;
@@ -156,34 +207,43 @@ impl ChessyApp {
 
     fn request_engine_move(&mut self) {
         let Some(engine) = &self.engine else { return };
-        let fen = self.game.current_fen();
         let uci_moves = self.game.uci_moves_to_cursor();
-        engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        if self.engine_running {
+            engine.stop();
+            self.stale_searches += 1;
+        }
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         if self.settings.limit_strength {
             engine.set_elo(self.settings.engine_elo);
         } else {
             engine.disable_limit_strength();
         }
-        engine.go_movetime(self.settings.movetime_ms);
+        match &self.clock {
+            Some(clock) => engine.go_clock(
+                clock.remaining_ms(PieceColor::White).max(1) as u64,
+                clock.remaining_ms(PieceColor::Black).max(1) as u64,
+                clock.increment_ms() as u64,
+                clock.increment_ms() as u64,
+                self.settings.movetime_ms,
+            ),
+            None => engine.go_movetime(self.settings.movetime_ms),
+        }
         self.engine_running = true;
         self.waiting_for_bestmove = true;
+        self.waiting_for_hint = false;
         self.engine_lines.clear();
     }
 
-    /// Begin reviewing the current game: stop analysis and evaluate every
-    /// position in turn.
     fn start_review(&mut self) {
         let Some(engine) = &self.engine else { return };
         if self.game.moves.is_empty() {
             return;
         }
         engine.stop();
-        // Output of the interrupted search arrives before `readyok`.
         engine.is_ready();
         self.review = None;
         self.review_run = Some(ReviewRun {
-            start_fen: start_fen(&self.game),
+            start_fen: self.game.start_fen(),
             game: self.game.clone(),
             evals: vec![],
             latest: None,
@@ -203,13 +263,11 @@ impl ChessyApp {
         }
     }
 
-    /// Search the next unevaluated position, or finish the review.
     fn review_advance(&mut self) {
         let Some(run) = &mut self.review_run else {
             return;
         };
 
-        // Finished positions (mate, stalemate) are scored without the engine.
         while let Some(pos) = run.game.positions.get(run.evals.len()) {
             match PositionEval::terminal(pos) {
                 Some(eval) => run.evals.push(eval),
@@ -227,14 +285,12 @@ impl ChessyApp {
             return;
         }
 
-        // Every position is evaluated.
         let run = self.review_run.take().expect("checked above");
         self.review = Review::build(&run.game, run.evals);
         self.engine_running = false;
         self.last_analyzed_fen.clear();
     }
 
-    /// Feed one engine message to the running review.
     fn review_handle(&mut self, msg: EngineOutput) {
         let Some(run) = &mut self.review_run else {
             return;
@@ -244,7 +300,6 @@ impl ChessyApp {
                 run.ready = true;
                 self.review_advance();
             }
-            // Until `readyok`, output belongs to the interrupted analysis.
             _ if !run.ready => {}
             EngineOutput::Info(info) => {
                 if info.multipv == 1 && !info.pv.is_empty() {
@@ -263,16 +318,103 @@ impl ChessyApp {
         }
     }
 
-    /// Progress of the running review, 0 to 1.
     fn review_progress(&self) -> Option<f32> {
         self.review_run
             .as_ref()
             .map(|run| run.evals.len() as f32 / run.game.positions.len() as f32)
     }
 
-    /// The finished review, if it still describes the game on the board.
     fn current_review(&self) -> Option<&Review> {
         self.review.as_ref().filter(|r| r.matches(&self.game))
+    }
+
+    fn stop_search(&mut self) {
+        if self.engine_running
+            && let Some(engine) = &self.engine
+        {
+            engine.stop();
+            self.stale_searches += 1;
+        }
+        self.engine_running = false;
+        self.waiting_for_bestmove = false;
+        self.waiting_for_hint = false;
+    }
+
+    fn play_is_over(&self) -> bool {
+        self.resigned.is_some() || self.flagged().is_some() || self.game.outcome().is_some()
+    }
+
+    fn players_turn(&self) -> bool {
+        self.mode == AppMode::Play
+            && !self.play_is_over()
+            && self.game.at_end()
+            && self.game.current_position().turn() == self.player_color
+    }
+
+    fn request_hint(&mut self) {
+        if !self.players_turn() || self.engine.is_none() {
+            return;
+        }
+        self.stop_search();
+        let Some(engine) = &self.engine else { return };
+        let fen = self.game.current_fen();
+        engine.set_position(&fen, &self.game.uci_moves_to_cursor());
+        engine.disable_limit_strength();
+        engine.go_movetime(self.settings.movetime_ms.min(HINT_MOVETIME_MS));
+        self.engine_running = true;
+        self.waiting_for_hint = true;
+        self.hint = None;
+    }
+
+    fn takeback(&mut self) {
+        let player_to_move = self.game.positions[self.game.moves.len()].turn() == self.player_color;
+        let plies = takeback_plies(self.game.moves.len(), player_to_move);
+        if plies == 0 {
+            return;
+        }
+        self.stop_search();
+        self.game.take_back(plies);
+        self.game
+            .headers
+            .insert("Result".to_string(), "*".to_string());
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
+        self.interaction.selected = None;
+        self.interaction.pending_promotion = None;
+    }
+
+    fn resign(&mut self) {
+        if self.mode != AppMode::Play || self.play_is_over() {
+            return;
+        }
+        self.stop_search();
+        self.resigned = Some(self.player_color);
+        self.resign_armed = false;
+        self.hint = None;
+        let result = match self.player_color {
+            PieceColor::White => "0-1",
+            PieceColor::Black => "1-0",
+        };
+        self.game
+            .headers
+            .insert("Result".to_string(), result.to_string());
+    }
+
+    fn play_from_here(&mut self) {
+        self.stop_search();
+        self.game.truncate_to_cursor();
+        self.game
+            .headers
+            .insert("Result".to_string(), "*".to_string());
+        self.player_color = self.game.current_position().turn();
+        self.flipped = self.player_color == PieceColor::Black;
+        self.mode = AppMode::Play;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
+        self.engine_lines.clear();
+        self.interaction.selected = None;
     }
 
     fn poll_engine(&mut self) {
@@ -287,17 +429,21 @@ impl ChessyApp {
                 continue;
             }
             match msg {
+                EngineOutput::Info(_) if self.stale_searches > 0 => {}
+                EngineOutput::BestMove(_) if self.stale_searches > 0 => {
+                    self.stale_searches -= 1;
+                }
                 EngineOutput::Info(info) => self.upsert_engine_line(info),
                 EngineOutput::BestMove(mv_str) => {
                     self.engine_running = false;
-                    if self.waiting_for_bestmove && self.mode == AppMode::Play {
+                    if self.waiting_for_hint {
+                        self.waiting_for_hint = false;
+                        self.hint = uci_squares(&mv_str)
+                            .map(|(from, to)| (from, to, self.game.current_fen()));
+                    } else if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        if self.game.make_uci_move(&mv_str).is_ok()
-                            && let Some(audio) = &self.audio
-                        {
-                            let m = self.game.moves[self.game.cursor - 1];
-                            let event = sound_for_move(&m, self.game.current_position());
-                            audio.play(event);
+                        if self.game.make_uci_move(&mv_str).is_ok() {
+                            self.play_nav_sound();
                         }
                     }
                 }
@@ -325,16 +471,72 @@ impl ChessyApp {
         self.engine_lines[idx] = info;
     }
 
+    fn reset_clock(&mut self) {
+        self.clock = (self.mode == AppMode::Play)
+            .then(|| clock::preset(&self.settings.time_control))
+            .flatten()
+            .map(Clock::new);
+        self.clock_plies = self.game.moves.len();
+    }
+
+    fn update_clock(&mut self) {
+        let now = self.now;
+        let active = self.mode == AppMode::Play && !self.play_is_over();
+        let Some(clock) = &mut self.clock else { return };
+
+        let plies = self.game.moves.len();
+        for before in self
+            .game
+            .positions
+            .iter()
+            .take(plies)
+            .skip(self.clock_plies)
+        {
+            clock.on_move(before.turn(), now);
+        }
+        self.clock_plies = plies;
+
+        if active {
+            clock.tick(now);
+        } else {
+            clock.pause(now);
+        }
+
+        if let Some(loser) = clock.flagged()
+            && self.game.headers.get("Result").map(String::as_str) == Some("*")
+        {
+            let result = match loser {
+                PieceColor::White => "0-1",
+                PieceColor::Black => "1-0",
+            };
+            self.game
+                .headers
+                .insert("Result".to_string(), result.to_string());
+            if let Some(engine) = &self.engine {
+                engine.stop();
+            }
+            self.waiting_for_bestmove = false;
+        }
+    }
+
+    fn flagged(&self) -> Option<PieceColor> {
+        self.clock.as_ref().and_then(Clock::flagged)
+    }
+
     fn new_game(&mut self) {
         self.game = Game::new();
+        self.reset_clock();
         self.engine_lines.clear();
         self.eval_score = None;
         self.interaction.selected = None;
         self.interaction.drag_from = None;
         self.interaction.drag_pos = None;
-        self.waiting_for_bestmove = false;
+        self.stop_search();
         self.last_analyzed_fen = String::new();
         self.interaction.pending_promotion = None;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
 
         if self.mode == AppMode::Analyze {
             self.start_analysis();
@@ -350,9 +552,14 @@ impl ChessyApp {
     /// to analyze mode.
     fn load_game(&mut self, game: Game, switch_to_analyze: bool) {
         self.game = game;
+        self.clock = None;
+        self.clock_plies = self.game.moves.len();
         self.engine_lines.clear();
         self.eval_score = None;
         self.interaction.selected = None;
+        self.resigned = None;
+        self.resign_armed = false;
+        self.hint = None;
         if switch_to_analyze {
             self.mode = AppMode::Analyze;
         }
@@ -392,9 +599,26 @@ impl ChessyApp {
             .add_filter("PGN files", &["pgn"])
             .pick_file()
             && let Ok(games) = pgn::load_pgn(&path)
-            && let Some(first) = games.into_iter().next()
         {
-            self.load_game(first, true);
+            self.open_games(games);
+        }
+    }
+
+    fn open_games(&mut self, games: Vec<Game>) {
+        let Some(first) = games.first().cloned() else {
+            return;
+        };
+        self.show_game_picker = games.len() > 1;
+        self.pgn_filter.clear();
+        self.pgn_games = games;
+        self.pgn_current = Some(0);
+        self.load_game(first, true);
+    }
+
+    fn pick_game(&mut self, idx: usize) {
+        if let Some(game) = self.pgn_games.get(idx).cloned() {
+            self.pgn_current = Some(idx);
+            self.load_game(game, true);
         }
     }
 
@@ -420,8 +644,14 @@ impl ChessyApp {
         // analyze mode.
         if let Ok(game) = Game::from_fen(text) {
             self.load_game(game, false);
-        } else if let Some(game) = pgn::load_pgn_str(text).into_iter().next() {
-            self.load_game(game, true);
+        } else {
+            self.open_games(pgn::load_pgn_str(text));
+        }
+    }
+
+    fn copy_pgn(&self) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(self.game.to_pgn());
         }
     }
 
@@ -432,13 +662,18 @@ impl ChessyApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &Context) {
-        let (new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
+        let (copy_pgn, new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
             (
+                i.consume_shortcut(&SHORTCUT_COPY_PGN),
                 i.consume_shortcut(&SHORTCUT_NEW_GAME),
                 i.consume_shortcut(&SHORTCUT_OPEN_PGN),
                 i.consume_shortcut(&SHORTCUT_SAVE_PGN),
             )
         });
+
+        if copy_pgn {
+            self.copy_pgn();
+        }
 
         if new_game {
             self.new_game();
@@ -484,15 +719,23 @@ impl ChessyApp {
         });
     }
 
+    fn play_move_sound(&self, event: SoundEvent) {
+        let Some(audio) = &self.audio else { return };
+        audio.play(game_end_sound(
+            event,
+            self.game.outcome(),
+            (self.mode == AppMode::Play).then_some(self.player_color),
+        ));
+    }
+
     fn play_nav_sound(&self) {
         let cursor = self.game.cursor;
         if cursor == 0 {
             return;
         }
-        let Some(audio) = &self.audio else { return };
         let m = self.game.moves[cursor - 1];
         let event = sound_for_move(&m, self.game.current_position());
-        audio.play(event);
+        self.play_move_sound(event);
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
@@ -524,9 +767,23 @@ impl ChessyApp {
                     self.save_pgn();
                     ui.close();
                 }
+                if ui
+                    .add_enabled(
+                        self.pgn_games.len() > 1,
+                        egui::Button::new(format!("Games in File ({})…", self.pgn_games.len())),
+                    )
+                    .clicked()
+                {
+                    self.show_game_picker = true;
+                    ui.close();
+                }
                 ui.separator();
                 if menu_item(ui, "Copy FEN", None) {
                     self.copy_fen();
+                    ui.close();
+                }
+                if menu_item(ui, "Copy PGN", Some(&SHORTCUT_COPY_PGN)) {
+                    self.copy_pgn();
                     ui.close();
                 }
                 if menu_item(ui, "Paste FEN / PGN", None) {
@@ -541,8 +798,9 @@ impl ChessyApp {
                     .selectable_label(self.mode == AppMode::Analyze, "Analyze")
                     .clicked()
                 {
+                    self.stop_search();
                     self.mode = AppMode::Analyze;
-                    self.waiting_for_bestmove = false;
+                    self.last_analyzed_fen.clear();
                     self.start_analysis();
                     ui.close();
                 }
@@ -550,8 +808,23 @@ impl ChessyApp {
                     .selectable_label(self.mode == AppMode::Play, "Play vs Engine")
                     .clicked()
                 {
+                    self.stop_search();
                     self.mode = AppMode::Play;
                     self.engine_lines.clear();
+                    if self.game.moves.is_empty() {
+                        self.reset_clock();
+                    }
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.mode != AppMode::Setup && !self.game.is_game_over(),
+                        egui::Button::new("Play from Current Position"),
+                    )
+                    .on_hover_text("Play the engine from this position, as the side to move")
+                    .clicked()
+                {
+                    self.play_from_here();
                     ui.close();
                 }
                 if ui
@@ -579,6 +852,23 @@ impl ChessyApp {
                     self.flipped = true;
                     ui.close();
                 }
+                ui.separator();
+                section(ui, "Time control (next game)");
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(190.0);
+                    for (label, _) in clock::PRESETS {
+                        if ui
+                            .selectable_label(self.settings.time_control == *label, *label)
+                            .clicked()
+                        {
+                            self.settings.time_control = label.to_string();
+                            self.settings.save();
+                            if self.game.moves.is_empty() {
+                                self.reset_clock();
+                            }
+                        }
+                    }
+                });
             });
 
             ui.menu_button("View", |ui| {
@@ -588,6 +878,24 @@ impl ChessyApp {
                 {
                     self.flipped = !self.flipped;
                     ui.close();
+                }
+                let mut engine_arrow = self.settings.engine_arrow;
+                if ui
+                    .checkbox(&mut engine_arrow, "Best-Move Arrow")
+                    .on_hover_text("Show the engine's first choice on the board while analyzing")
+                    .changed()
+                {
+                    self.settings.engine_arrow = engine_arrow;
+                    self.settings.save();
+                }
+                let mut animate = self.settings.animate_moves;
+                if ui
+                    .checkbox(&mut animate, "Animate Moves")
+                    .on_hover_text("Slide pieces between squares")
+                    .changed()
+                {
+                    self.settings.animate_moves = animate;
+                    self.settings.save();
                 }
                 ui.separator();
                 section(ui, "Theme");
@@ -659,6 +967,16 @@ impl ChessyApp {
                 );
 
                 ui.label(RichText::new("F   flip board").small().color(Color32::GRAY));
+                ui.label(
+                    RichText::new("Right-drag   draw arrow")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.label(
+                    RichText::new("Right-click   mark square")
+                        .small()
+                        .color(Color32::GRAY),
+                );
             });
 
             // Mode + engine status indicator on the right
@@ -691,6 +1009,8 @@ impl ChessyApp {
         let mut movetime_ms = self.settings.movetime_ms;
         let mut multipv = self.settings.multipv;
         let mut piece_set = self.settings.piece_set.clone();
+        let mut board_theme = self.settings.board_theme.clone();
+        let mut show_coordinates = self.settings.show_coordinates;
         let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
@@ -771,6 +1091,30 @@ impl ChessyApp {
                     });
                 }
 
+                ui.add_space(4.0);
+                ui.label("Board colours:");
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(board_theme.is_empty(), "Auto")
+                        .on_hover_text("Green with the dark interface, brown with the light one")
+                        .clicked()
+                    {
+                        board_theme.clear();
+                    }
+                    for theme in BOARD_THEMES {
+                        let selected = board_theme.eq_ignore_ascii_case(theme.name);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
+                        let (left, right) = rect.split_left_right_at_fraction(0.5);
+                        ui.painter().rect_filled(left, 0.0, theme.light);
+                        ui.painter().rect_filled(right, 0.0, theme.dark);
+                        if ui.selectable_label(selected, theme.name).clicked() {
+                            board_theme = theme.name.to_string();
+                        }
+                    }
+                });
+                ui.checkbox(&mut show_coordinates, "Show coordinates");
+
                 ui.separator();
 
                 ui.horizontal(|ui| {
@@ -791,6 +1135,8 @@ impl ChessyApp {
         self.settings.movetime_ms = movetime_ms;
         self.settings.multipv = multipv;
         self.settings.piece_set = piece_set;
+        self.settings.board_theme = board_theme;
+        self.settings.show_coordinates = show_coordinates;
 
         if close {
             self.show_settings = false;
@@ -822,7 +1168,6 @@ impl ChessyApp {
         self.show_about = open;
     }
 
-    /// Review button, progress, or the finished review's summary and graph.
     fn show_review_panel(&mut self, ui: &mut Ui, text_col: Color32) {
         if let Some(progress) = self.review_progress() {
             ui.add_space(2.0);
@@ -884,6 +1229,64 @@ impl ChessyApp {
         {
             self.game.go_to(idx);
             self.interaction.selected = None;
+        }
+    }
+
+    fn show_play_controls(&mut self, ui: &mut Ui) {
+        let player_to_move = self.game.positions[self.game.moves.len()].turn() == self.player_color;
+        let can_take_back = takeback_plies(self.game.moves.len(), player_to_move) > 0;
+        let can_act = self.players_turn();
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(can_take_back, egui::Button::new("Takeback"))
+                .on_hover_text("Undo your last move")
+                .clicked()
+            {
+                self.takeback();
+            }
+
+            if ui
+                .add_enabled(
+                    can_act && self.engine.is_some() && !self.waiting_for_hint,
+                    egui::Button::new("Hint"),
+                )
+                .on_hover_text("Show the engine's suggestion for your move")
+                .clicked()
+            {
+                self.request_hint();
+            }
+
+            if self.play_is_over() {
+                if ui.button("New Game").clicked() {
+                    self.new_game();
+                }
+            } else if self.resign_armed {
+                if ui
+                    .button(RichText::new("Confirm resign").color(Color32::from_rgb(220, 80, 80)))
+                    .clicked()
+                {
+                    self.resign();
+                }
+                if ui.button("Cancel").clicked() {
+                    self.resign_armed = false;
+                }
+            } else if ui.button("Resign").clicked() {
+                self.resign_armed = true;
+            }
+        });
+
+        let status = if self.waiting_for_hint {
+            Some("Finding a hint…")
+        } else if self.waiting_for_bestmove {
+            Some("Engine is thinking…")
+        } else if self.engine.is_none() {
+            Some("Engine offline: set its path in Engine → Settings")
+        } else {
+            None
+        };
+        if let Some(text) = status {
+            ui.label(RichText::new(text).small().italics().color(Color32::GRAY));
         }
     }
 
@@ -992,34 +1395,57 @@ impl ChessyApp {
         };
         let mut chosen_role: Option<Role> = None;
 
+        let color = self.game.current_position().turn();
+        let mut cancelled = ctx.input(|i| i.key_pressed(Key::Escape));
+
         egui::Window::new("Promote Pawn")
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Choose promotion piece:");
-                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
-                        let label = match role {
+                        let name = match role {
                             Role::Queen => "Queen",
                             Role::Rook => "Rook",
                             Role::Bishop => "Bishop",
                             Role::Knight => "Knight",
                             _ => unreachable!(),
                         };
-                        if ui.button(label).clicked() {
+                        let clicked = match self.piece_textures.get(Piece { color, role }) {
+                            Some(tex) => {
+                                let img = egui::Image::from_texture(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::vec2(56.0, 56.0),
+                                ));
+                                ui.add(egui::Button::image(img))
+                                    .on_hover_text(name)
+                                    .clicked()
+                            }
+                            None => ui.button(name).clicked(),
+                        };
+                        if clicked {
                             chosen_role = Some(role);
                         }
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                    ui.label(RichText::new("Esc").small().color(Color32::GRAY));
+                });
             });
 
+        if cancelled && chosen_role.is_none() {
+            self.interaction.pending_promotion = None;
+            return;
+        }
+
         if let Some(role) = chosen_role {
-            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role)
-                && let Some(audio) = &self.audio
-            {
-                audio.play(event);
+            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role) {
+                self.play_move_sound(event);
             }
             self.interaction.pending_promotion = None;
         }
@@ -1030,13 +1456,15 @@ impl eframe::App for ChessyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        self.now = ctx.input(|i| i.time);
         self.poll_engine();
         self.handle_keyboard(&ctx);
+        self.update_clock();
 
         // Trigger engine move if it's the engine's turn in play mode
         if self.mode == AppMode::Play
             && !self.waiting_for_bestmove
-            && !self.game.is_game_over()
+            && !self.play_is_over()
             && self.game.at_end()
             && self.game.current_position().turn() != self.player_color
         {
@@ -1044,7 +1472,6 @@ impl eframe::App for ChessyApp {
         }
 
         // Restart analysis when cursor moves in analyze mode
-        // A review owns the engine until it finishes; leaving analysis ends it.
         if self.review_run.is_some() && self.mode != AppMode::Analyze {
             self.cancel_review();
         }
@@ -1072,6 +1499,18 @@ impl eframe::App for ChessyApp {
         }
         if self.interaction.pending_promotion.is_some() {
             self.show_promotion_dialog(&ctx);
+        }
+        if self.show_game_picker {
+            let picked = show_game_picker(
+                &ctx,
+                &self.pgn_games,
+                &mut self.pgn_filter,
+                &mut self.show_game_picker,
+                self.pgn_current,
+            );
+            if let Some(idx) = picked {
+                self.pick_game(idx);
+            }
         }
 
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
@@ -1116,14 +1555,52 @@ impl eframe::App for ChessyApp {
                     Color32::from_rgb(30, 30, 30)
                 };
 
+                let clock = self.clock.clone();
+                let start_board = self.game.start_position().board();
+                let board = self.game.current_position().board();
+                let white_lost = captured_pieces(start_board, board, PieceColor::White);
+                let black_lost = captured_pieces(start_board, board, PieceColor::Black);
+                let balance = material_balance(board);
+
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
                     ui.label(RichText::new(black).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::White,
+                        &white_lost,
+                        -balance,
+                    );
+                    show_clock(ui, clock.as_ref(), PieceColor::Black, text_col);
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♙ ").color(Color32::WHITE));
                     ui.label(RichText::new(white).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::Black,
+                        &black_lost,
+                        balance,
+                    );
+                    show_clock(ui, clock.as_ref(), PieceColor::White, text_col);
                 });
+
+                if let Some(opening) = OpeningBook::builtin().lookup(&self.game) {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&opening.eco)
+                                .small()
+                                .strong()
+                                .color(Color32::from_rgb(220, 180, 50)),
+                        );
+                        ui.label(RichText::new(&opening.name).small().color(text_col));
+                    })
+                    .response
+                    .on_hover_text("Opening");
+                }
 
                 ui.separator();
 
@@ -1140,6 +1617,10 @@ impl eframe::App for ChessyApp {
 
                 if self.mode == AppMode::Analyze {
                     self.show_review_panel(ui, text_col);
+                }
+
+                if self.mode == AppMode::Play {
+                    self.show_play_controls(ui);
                 }
 
                 ui.separator();
@@ -1191,8 +1672,19 @@ impl eframe::App for ChessyApp {
             .frame(egui::Frame::new().fill(bg_color))
             .show_inside(ui, |ui| {
                 // Status message (not shown while editing a position)
+                let outcome = match (self.resigned, self.flagged()) {
+                    (Some(PieceColor::White), _) => Some("White resigned · Black wins".to_string()),
+                    (Some(PieceColor::Black), _) => Some("Black resigned · White wins".to_string()),
+                    (None, Some(PieceColor::White)) => {
+                        Some("White lost on time · Black wins".to_string())
+                    }
+                    (None, Some(PieceColor::Black)) => {
+                        Some("Black lost on time · White wins".to_string())
+                    }
+                    (None, None) => self.game.outcome_string(),
+                };
                 if self.mode != AppMode::Setup
-                    && let Some(outcome) = self.game.outcome_string()
+                    && let Some(outcome) = outcome
                 {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -1204,6 +1696,7 @@ impl eframe::App for ChessyApp {
                     });
                 }
 
+                let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
                 let board_size = available.width().min(available.height());
                 let board_rect =
@@ -1214,7 +1707,7 @@ impl eframe::App for ChessyApp {
                         SetupBoardWidget::new(
                             &mut self.setup_board,
                             self.flipped,
-                            self.settings.dark_theme,
+                            board_style,
                             self.setup_palette,
                             &self.piece_textures,
                         )
@@ -1226,31 +1719,102 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    AppMode::Play => {
+                        !self.waiting_for_bestmove && !self.play_is_over() && self.game.at_end()
+                    }
                     AppMode::Setup => unreachable!(),
                 };
 
+                let hint = self
+                    .hint
+                    .as_ref()
+                    .filter(|(_, _, fen)| *fen == self.game.current_fen())
+                    .map(|(from, to, _)| (*from, *to));
+
+                let engine_arrow = (self.mode == AppMode::Analyze && self.settings.engine_arrow)
+                    .then(|| self.engine_lines.first())
+                    .flatten()
+                    .and_then(|line| line.pv.first())
+                    .and_then(|uci| uci_squares(uci));
+
+                let mut move_sound = None;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
-                    if let Some(event) = BoardWidget::new(
+                    move_sound = BoardWidget::new(
                         &mut self.game,
                         self.flipped,
-                        self.settings.dark_theme,
+                        board_style,
                         is_interactive,
                         &mut self.interaction,
                         &self.piece_textures,
                     )
-                    .show(ui)
-                        && let Some(audio) = &self.audio
-                    {
-                        audio.play(event);
-                    }
+                    .with_hint(hint)
+                    .with_engine_arrow(engine_arrow)
+                    .with_animation(self.settings.animate_moves)
+                    .show(ui);
                 });
+                if let Some(event) = move_sound {
+                    self.play_move_sound(event);
+                }
             });
 
         // Request continuous repaint while engine is running
         if self.engine_running || self.interaction.drag_from.is_some() {
             ctx.request_repaint();
         }
+        if self.clock.as_ref().is_some_and(|c| c.running().is_some()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+fn show_clock(ui: &mut Ui, clock: Option<&Clock>, color: PieceColor, text_col: Color32) {
+    let Some(clock) = clock else { return };
+    let ms = clock.remaining_ms(color);
+    let running = clock.running() == Some(color);
+
+    let (fg, bg) = if clock.flagged() == Some(color) || (running && ms < 10_000) {
+        (Color32::WHITE, Color32::from_rgb(190, 50, 50))
+    } else if running {
+        (Color32::BLACK, Color32::from_rgb(235, 235, 235))
+    } else {
+        (text_col, Color32::TRANSPARENT)
+    };
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::symmetric(6, 1))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format_clock(ms))
+                        .font(FontId::monospace(15.0))
+                        .color(fg)
+                        .strong(),
+                );
+            });
+    });
+}
+
+/// The player's last move plus the engine's reply if it has answered; 0 before the player has moved.
+fn takeback_plies(moves: usize, player_to_move: bool) -> usize {
+    let wanted = if player_to_move { 2 } else { 1 };
+    if moves >= wanted { wanted } else { 0 }
+}
+
+/// `player` is the human's colour when playing the engine.
+fn game_end_sound(
+    event: SoundEvent,
+    outcome: Option<Outcome>,
+    player: Option<PieceColor>,
+) -> SoundEvent {
+    match outcome {
+        Some(Outcome::Checkmate { winner }) => match player {
+            Some(color) if color != winner => SoundEvent::Defeat,
+            _ => SoundEvent::Victory,
+        },
+        Some(o) if o.is_draw() => SoundEvent::Draw,
+        _ => event,
     }
 }
 
@@ -1306,6 +1870,58 @@ mod tests {
 
     fn place(board: &mut Board, sq: Square, color: PieceColor, role: Role) {
         board.set_piece_at(sq, Piece { color, role });
+    }
+
+    #[test]
+    fn takeback_removes_own_move_and_engine_reply() {
+        assert_eq!(takeback_plies(2, true), 2);
+        assert_eq!(takeback_plies(7, true), 2);
+        assert_eq!(takeback_plies(1, false), 1);
+        assert_eq!(takeback_plies(6, false), 1);
+    }
+
+    #[test]
+    fn takeback_is_unavailable_before_the_player_has_moved() {
+        assert_eq!(takeback_plies(0, true), 0);
+        assert_eq!(takeback_plies(1, true), 0);
+        assert_eq!(takeback_plies(0, false), 0);
+    }
+
+    #[test]
+    fn game_end_sound_depends_on_who_won() {
+        let white_mates = Some(Outcome::Checkmate {
+            winner: PieceColor::White,
+        });
+        let e = SoundEvent::Checkmate;
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::White)),
+            SoundEvent::Victory
+        );
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::Black)),
+            SoundEvent::Defeat
+        );
+        assert_eq!(game_end_sound(e, white_mates, None), SoundEvent::Victory);
+    }
+
+    #[test]
+    fn game_end_sound_for_draws_and_ordinary_moves() {
+        assert_eq!(
+            game_end_sound(
+                SoundEvent::Capture,
+                Some(Outcome::ThreefoldRepetition),
+                Some(PieceColor::White)
+            ),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Move, Some(Outcome::FiftyMoveRule), None),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Capture, None, None),
+            SoundEvent::Capture
+        );
     }
 
     #[test]

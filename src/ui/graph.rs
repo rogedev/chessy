@@ -13,8 +13,6 @@ pub fn class_color(class: MoveClass) -> Option<Color32> {
     }
 }
 
-/// Index of the position under a pointer at horizontal offset `x` within a
-/// graph `width` wide showing `points` positions.
 pub fn index_at(x: f32, width: f32, points: usize) -> usize {
     if points < 2 || width <= 0.0 {
         return 0;
@@ -23,8 +21,6 @@ pub fn index_at(x: f32, width: f32, points: usize) -> usize {
     (frac * (points - 1) as f32).round() as usize
 }
 
-/// Draw White's winning chances over the game as a filled area. Clicking or
-/// dragging returns the index of the position to jump to.
 pub fn show_eval_graph(
     ui: &mut Ui,
     white_win: &[f32],
@@ -37,7 +33,6 @@ pub fn show_eval_graph(
     let rect = response.rect;
     let n = white_win.len();
 
-    // Black's share is the dark background; White's is the light area.
     painter.rect_filled(rect, 2.0, Color32::from_rgb(52, 52, 52));
 
     let x_of = |i: usize| {
@@ -50,7 +45,6 @@ pub fn show_eval_graph(
     let y_of = |win: f32| rect.bottom() - rect.height() * (win.clamp(0.0, 100.0) / 100.0);
 
     if n >= 2 {
-        // A triangle strip between the baseline and the curve.
         let fill = Color32::from_rgb(232, 232, 232);
         let mut mesh = Mesh::default();
         for (i, &win) in white_win.iter().enumerate() {
@@ -66,7 +60,6 @@ pub fn show_eval_graph(
         painter.add(Shape::mesh(mesh));
     }
 
-    // Even chances.
     painter.line_segment(
         [
             Pos2::new(rect.left(), rect.center().y),
@@ -75,14 +68,12 @@ pub fn show_eval_graph(
         Stroke::new(1.0_f32, Color32::from_rgb(130, 130, 130)),
     );
 
-    // Dots on the moves that cost something. Move `i` leads to position `i + 1`.
     for (i, class) in classes.iter().enumerate() {
         if let (Some(color), Some(&win)) = (class_color(*class), white_win.get(i + 1)) {
             painter.circle_filled(Pos2::new(x_of(i + 1), y_of(win)), 3.0, color);
         }
     }
 
-    // Current position.
     if cursor < n {
         let x = x_of(cursor);
         painter.line_segment(
@@ -105,7 +96,6 @@ mod tests {
 
     #[test]
     fn index_at_maps_edges_and_middle() {
-        // Five positions across 400 px: one every 100 px.
         assert_eq!(index_at(0.0, 400.0, 5), 0);
         assert_eq!(index_at(400.0, 400.0, 5), 4);
         assert_eq!(index_at(200.0, 400.0, 5), 2);

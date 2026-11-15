@@ -1,16 +1,10 @@
-//! Game review: turn one engine evaluation per position into a verdict on
-//! every move, an accuracy figure per side and data for the eval graph.
-//!
-//! The scale follows the public Lichess formulas: centipawns are mapped to
-//! a winning percentage, and a move is judged by how much winning
-//! percentage it gave away.
+//! Move verdicts and accuracy from per-position evaluations, using the Lichess winning-chance formulas.
 
-use shakmaty::{Color, EnPassantMode, Position, fen::Fen};
+use shakmaty::{Color, Position};
 
 use super::Game;
 use crate::engine::Score;
 
-/// Chance of winning, 0 to 100, for the side the score is given for.
 pub fn win_percent(score: &Score) -> f32 {
     match score {
         Score::Mate(n) if *n > 0 => 100.0,
@@ -22,8 +16,6 @@ pub fn win_percent(score: &Score) -> f32 {
     }
 }
 
-/// Accuracy of one move, 0 to 100, from the mover's winning percentage
-/// before and after it.
 pub fn move_accuracy(before: f32, after: f32) -> f32 {
     if after >= before {
         return 100.0;
@@ -34,7 +26,6 @@ pub fn move_accuracy(before: f32, after: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoveClass {
-    /// The engine's first choice.
     Best,
     Good,
     Inaccuracy,
@@ -43,7 +34,6 @@ pub enum MoveClass {
 }
 
 impl MoveClass {
-    /// Classify by winning percentage given away.
     pub fn from_loss(loss: f32) -> Self {
         if loss >= 15.0 {
             MoveClass::Blunder
@@ -56,7 +46,6 @@ impl MoveClass {
         }
     }
 
-    /// Conventional annotation glyph, empty for moves without one.
     pub fn symbol(self) -> &'static str {
         match self {
             MoveClass::Inaccuracy => "?!",
@@ -67,17 +56,13 @@ impl MoveClass {
     }
 }
 
-/// The engine's view of one position.
 #[derive(Clone, Debug)]
 pub struct PositionEval {
-    /// White's chance of winning, 0 to 100.
     pub white_win: f32,
-    /// Best move in UCI form; `None` when the game is over here.
     pub best_move: Option<String>,
 }
 
 impl PositionEval {
-    /// From an engine score, which is given for the side to move.
     pub fn from_engine(score: &Score, turn: Color, best_move: String) -> Self {
         let mover_win = win_percent(score);
         Self {
@@ -89,7 +74,6 @@ impl PositionEval {
         }
     }
 
-    /// Positions the engine cannot search because the game has ended.
     pub fn terminal(pos: &shakmaty::Chess) -> Option<Self> {
         let white_win = if pos.is_checkmate() {
             match pos.turn() {
@@ -131,21 +115,15 @@ pub struct SideSummary {
     pub blunders: usize,
 }
 
-/// A finished review of one game.
 #[derive(Clone, Debug)]
 pub struct Review {
-    /// One evaluation per position (moves + 1).
     pub evals: Vec<PositionEval>,
-    /// One verdict per move.
     pub moves: Vec<MoveReview>,
-    /// Identity of the reviewed game, to notice when it has changed.
     start_fen: String,
     san: Vec<String>,
 }
 
 impl Review {
-    /// Judge every move of `game` given an evaluation of each position.
-    /// Returns `None` unless there is exactly one evaluation per position.
     pub fn build(game: &Game, evals: Vec<PositionEval>) -> Option<Self> {
         if evals.len() != game.positions.len() {
             return None;
@@ -179,14 +157,13 @@ impl Review {
         Some(Self {
             evals,
             moves,
-            start_fen: start_fen(game),
+            start_fen: game.start_fen(),
             san: game.san.clone(),
         })
     }
 
-    /// Whether this review still describes `game`.
     pub fn matches(&self, game: &Game) -> bool {
-        self.san == game.san && self.start_fen == start_fen(game)
+        self.san == game.san && self.start_fen == game.start_fen()
     }
 
     pub fn summary(&self, color: Color) -> SideSummary {
@@ -212,10 +189,6 @@ impl Review {
     pub fn white_win(&self) -> Vec<f32> {
         self.evals.iter().map(|e| e.white_win).collect()
     }
-}
-
-pub fn start_fen(game: &Game) -> String {
-    Fen::from_position(game.start_position(), EnPassantMode::Legal).to_string()
 }
 
 #[cfg(test)]
@@ -246,7 +219,6 @@ mod tests {
         assert!((up + down - 100.0).abs() < 0.001);
         assert_eq!(win_percent(&Score::Mate(3)), 100.0);
         assert_eq!(win_percent(&Score::Mate(-1)), 0.0);
-        // Huge scores are clamped rather than overflowing.
         assert!(win_percent(&Score::Cp(50_000)) < 100.0);
         assert!(win_percent(&Score::Cp(50_000)) > 95.0);
     }
@@ -297,7 +269,6 @@ mod tests {
 
     #[test]
     fn build_classifies_each_move_from_the_movers_side() {
-        // 1. e4 (best) e5 (fine) 2. Ke2 (White throws away 25 points)
         let g = play(&["e2e4", "e7e5", "e1e2"]);
         let evals = vec![
             eval(55.0, "e2e4"),
@@ -313,14 +284,12 @@ mod tests {
         );
         assert_eq!(r.moves[0].mover, Color::White);
         assert_eq!(r.moves[1].mover, Color::Black);
-        // Black's 1... e5 let White's chances rise by one point: a tiny loss.
         assert!(r.moves[1].accuracy > 90.0);
         assert!(r.moves[2].accuracy < 40.0);
     }
 
     #[test]
     fn a_blunder_by_black_is_measured_against_blacks_chances() {
-        // After Black's move White's winning chances jump from 50 to 80.
         let g = play(&["e2e4", "f7f6"]);
         let evals = vec![eval(50.0, "e2e4"), eval(50.0, "e7e5"), eval(80.0, "d2d4")];
         let r = Review::build(&g, evals).unwrap();
