@@ -11,9 +11,12 @@ pub struct Settings {
     pub analysis_depth: u8,
     #[serde(default = "default_piece_set")]
     pub piece_set: String,
-    /// Draw an arrow on the board for the engine's best move.
-    #[serde(default = "default_engine_arrow")]
+    #[serde(default = "default_true")]
     pub engine_arrow: bool,
+    #[serde(default)]
+    pub board_theme: String,
+    #[serde(default = "default_true")]
+    pub show_coordinates: bool,
 }
 
 impl Default for Settings {
@@ -27,7 +30,9 @@ impl Default for Settings {
             movetime_ms: 2000,
             analysis_depth: 20,
             piece_set: default_piece_set(),
-            engine_arrow: default_engine_arrow(),
+            engine_arrow: true,
+            board_theme: String::new(),
+            show_coordinates: true,
         }
     }
 }
@@ -56,7 +61,7 @@ fn config_path() -> Option<std::path::PathBuf> {
     dirs_next::config_dir().map(|d| d.join("chessy").join("settings.json"))
 }
 
-fn default_engine_arrow() -> bool {
+fn default_true() -> bool {
     true
 }
 
@@ -103,8 +108,22 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.piece_set, "cburnett");
-        // The engine arrow, added later, is on by default.
         assert!(s.engine_arrow);
+        assert_eq!(s.board_theme, "");
+        assert!(s.show_coordinates);
+    }
+
+    #[test]
+    fn board_settings_roundtrip_through_json() {
+        let s = Settings {
+            board_theme: "Blue".to_string(),
+            show_coordinates: false,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.board_theme, "Blue");
+        assert!(!s2.show_coordinates);
     }
 
     #[test]

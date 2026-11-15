@@ -6,18 +6,25 @@ use shakmaty::{
 };
 
 use crate::{
-    audio::AudioPlayer,
-    chess::{Game, pgn},
+    audio::{AudioPlayer, SoundEvent},
+    chess::{
+        Game, Outcome,
+        material::{captured_pieces, material_balance},
+        openings::OpeningBook,
+        pgn,
+    },
     engine::{EngineInfo, EngineOutput, Score, UciClient},
     ui::{
         Settings,
         analysis::{show_analysis_panel, show_eval_bar},
         arrows::uci_squares,
         board::{
-            BoardInteraction, BoardWidget, PieceTextures, SetupBoardWidget, available_piece_sets,
-            sound_for_move, try_make_promotion_move,
+            BOARD_THEMES, BoardInteraction, BoardStyle, BoardTheme, BoardWidget, PieceTextures,
+            SetupBoardWidget, available_piece_sets, sound_for_move, try_make_promotion_move,
         },
+        captured::show_captured,
         moves::show_moves_panel,
+        picker::show_game_picker,
     },
 };
 
@@ -27,6 +34,10 @@ const SHORTCUT_OPEN_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::O);
 const SHORTCUT_SAVE_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S);
+const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    Key::C,
+);
 
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
@@ -64,6 +75,10 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
+    pgn_games: Vec<Game>,
+    pgn_current: Option<usize>,
+    pgn_filter: String,
+    show_game_picker: bool,
 }
 
 impl ChessyApp {
@@ -94,9 +109,27 @@ impl ChessyApp {
             setup_turn: PieceColor::White,
             setup_palette: None,
             setup_error: None,
+            pgn_games: vec![],
+            pgn_current: None,
+            pgn_filter: String::new(),
+            show_game_picker: false,
         };
+
+        if let Some(arg) = std::env::args().nth(1)
+            && let Ok(games) = pgn::load_pgn(Path::new(&arg))
+        {
+            app.open_games(games);
+        }
+
         app.start_analysis();
         app
+    }
+
+    fn board_style(&self) -> BoardStyle {
+        BoardStyle {
+            theme: BoardTheme::resolve(&self.settings.board_theme, self.settings.dark_theme),
+            show_coordinates: self.settings.show_coordinates,
+        }
     }
 
     fn reconnect_engine(&mut self) {
@@ -121,7 +154,7 @@ impl ChessyApp {
         }
         let uci_moves = self.game.uci_moves_to_cursor();
         engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         engine.go_depth(self.settings.analysis_depth, self.settings.multipv);
         self.engine_running = true;
         self.last_analyzed_fen = fen;
@@ -130,10 +163,9 @@ impl ChessyApp {
 
     fn request_engine_move(&mut self) {
         let Some(engine) = &self.engine else { return };
-        let fen = self.game.current_fen();
         let uci_moves = self.game.uci_moves_to_cursor();
         engine.stop();
-        engine.set_position(&fen, &uci_moves);
+        engine.set_position(&self.game.start_fen(), &uci_moves);
         if self.settings.limit_strength {
             engine.set_elo(self.settings.engine_elo);
         } else {
@@ -158,12 +190,8 @@ impl ChessyApp {
                     self.engine_running = false;
                     if self.waiting_for_bestmove && self.mode == AppMode::Play {
                         self.waiting_for_bestmove = false;
-                        if self.game.make_uci_move(&mv_str).is_ok()
-                            && let Some(audio) = &self.audio
-                        {
-                            let m = self.game.moves[self.game.cursor - 1];
-                            let event = sound_for_move(&m, self.game.current_position());
-                            audio.play(event);
+                        if self.game.make_uci_move(&mv_str).is_ok() {
+                            self.play_nav_sound();
                         }
                     }
                 }
@@ -258,9 +286,26 @@ impl ChessyApp {
             .add_filter("PGN files", &["pgn"])
             .pick_file()
             && let Ok(games) = pgn::load_pgn(&path)
-            && let Some(first) = games.into_iter().next()
         {
-            self.load_game(first, true);
+            self.open_games(games);
+        }
+    }
+
+    fn open_games(&mut self, games: Vec<Game>) {
+        let Some(first) = games.first().cloned() else {
+            return;
+        };
+        self.show_game_picker = games.len() > 1;
+        self.pgn_filter.clear();
+        self.pgn_games = games;
+        self.pgn_current = Some(0);
+        self.load_game(first, true);
+    }
+
+    fn pick_game(&mut self, idx: usize) {
+        if let Some(game) = self.pgn_games.get(idx).cloned() {
+            self.pgn_current = Some(idx);
+            self.load_game(game, true);
         }
     }
 
@@ -286,8 +331,14 @@ impl ChessyApp {
         // analyze mode.
         if let Ok(game) = Game::from_fen(text) {
             self.load_game(game, false);
-        } else if let Some(game) = pgn::load_pgn_str(text).into_iter().next() {
-            self.load_game(game, true);
+        } else {
+            self.open_games(pgn::load_pgn_str(text));
+        }
+    }
+
+    fn copy_pgn(&self) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(self.game.to_pgn());
         }
     }
 
@@ -298,13 +349,18 @@ impl ChessyApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &Context) {
-        let (new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
+        let (copy_pgn, new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
             (
+                i.consume_shortcut(&SHORTCUT_COPY_PGN),
                 i.consume_shortcut(&SHORTCUT_NEW_GAME),
                 i.consume_shortcut(&SHORTCUT_OPEN_PGN),
                 i.consume_shortcut(&SHORTCUT_SAVE_PGN),
             )
         });
+
+        if copy_pgn {
+            self.copy_pgn();
+        }
 
         if new_game {
             self.new_game();
@@ -350,15 +406,23 @@ impl ChessyApp {
         });
     }
 
+    fn play_move_sound(&self, event: SoundEvent) {
+        let Some(audio) = &self.audio else { return };
+        audio.play(game_end_sound(
+            event,
+            self.game.outcome(),
+            (self.mode == AppMode::Play).then_some(self.player_color),
+        ));
+    }
+
     fn play_nav_sound(&self) {
         let cursor = self.game.cursor;
         if cursor == 0 {
             return;
         }
-        let Some(audio) = &self.audio else { return };
         let m = self.game.moves[cursor - 1];
         let event = sound_for_move(&m, self.game.current_position());
-        audio.play(event);
+        self.play_move_sound(event);
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
@@ -390,9 +454,23 @@ impl ChessyApp {
                     self.save_pgn();
                     ui.close();
                 }
+                if ui
+                    .add_enabled(
+                        self.pgn_games.len() > 1,
+                        egui::Button::new(format!("Games in File ({})…", self.pgn_games.len())),
+                    )
+                    .clicked()
+                {
+                    self.show_game_picker = true;
+                    ui.close();
+                }
                 ui.separator();
                 if menu_item(ui, "Copy FEN", None) {
                     self.copy_fen();
+                    ui.close();
+                }
+                if menu_item(ui, "Copy PGN", Some(&SHORTCUT_COPY_PGN)) {
+                    self.copy_pgn();
                     ui.close();
                 }
                 if menu_item(ui, "Paste FEN / PGN", None) {
@@ -576,6 +654,8 @@ impl ChessyApp {
         let mut movetime_ms = self.settings.movetime_ms;
         let mut multipv = self.settings.multipv;
         let mut piece_set = self.settings.piece_set.clone();
+        let mut board_theme = self.settings.board_theme.clone();
+        let mut show_coordinates = self.settings.show_coordinates;
         let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
@@ -656,6 +736,30 @@ impl ChessyApp {
                     });
                 }
 
+                ui.add_space(4.0);
+                ui.label("Board colours:");
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(board_theme.is_empty(), "Auto")
+                        .on_hover_text("Green with the dark interface, brown with the light one")
+                        .clicked()
+                    {
+                        board_theme.clear();
+                    }
+                    for theme in BOARD_THEMES {
+                        let selected = board_theme.eq_ignore_ascii_case(theme.name);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
+                        let (left, right) = rect.split_left_right_at_fraction(0.5);
+                        ui.painter().rect_filled(left, 0.0, theme.light);
+                        ui.painter().rect_filled(right, 0.0, theme.dark);
+                        if ui.selectable_label(selected, theme.name).clicked() {
+                            board_theme = theme.name.to_string();
+                        }
+                    }
+                });
+                ui.checkbox(&mut show_coordinates, "Show coordinates");
+
                 ui.separator();
 
                 ui.horizontal(|ui| {
@@ -676,6 +780,8 @@ impl ChessyApp {
         self.settings.movetime_ms = movetime_ms;
         self.settings.multipv = multipv;
         self.settings.piece_set = piece_set;
+        self.settings.board_theme = board_theme;
+        self.settings.show_coordinates = show_coordinates;
 
         if close {
             self.show_settings = false;
@@ -812,34 +918,57 @@ impl ChessyApp {
         };
         let mut chosen_role: Option<Role> = None;
 
+        let color = self.game.current_position().turn();
+        let mut cancelled = ctx.input(|i| i.key_pressed(Key::Escape));
+
         egui::Window::new("Promote Pawn")
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Choose promotion piece:");
-                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for role in [Role::Queen, Role::Rook, Role::Bishop, Role::Knight] {
-                        let label = match role {
+                        let name = match role {
                             Role::Queen => "Queen",
                             Role::Rook => "Rook",
                             Role::Bishop => "Bishop",
                             Role::Knight => "Knight",
                             _ => unreachable!(),
                         };
-                        if ui.button(label).clicked() {
+                        let clicked = match self.piece_textures.get(Piece { color, role }) {
+                            Some(tex) => {
+                                let img = egui::Image::from_texture(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::vec2(56.0, 56.0),
+                                ));
+                                ui.add(egui::Button::image(img))
+                                    .on_hover_text(name)
+                                    .clicked()
+                            }
+                            None => ui.button(name).clicked(),
+                        };
+                        if clicked {
                             chosen_role = Some(role);
                         }
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                    ui.label(RichText::new("Esc").small().color(Color32::GRAY));
+                });
             });
 
+        if cancelled && chosen_role.is_none() {
+            self.interaction.pending_promotion = None;
+            return;
+        }
+
         if let Some(role) = chosen_role {
-            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role)
-                && let Some(audio) = &self.audio
-            {
-                audio.play(event);
+            if let Some(event) = try_make_promotion_move(&mut self.game, from, to, role) {
+                self.play_move_sound(event);
             }
             self.interaction.pending_promotion = None;
         }
@@ -856,7 +985,7 @@ impl eframe::App for ChessyApp {
         // Trigger engine move if it's the engine's turn in play mode
         if self.mode == AppMode::Play
             && !self.waiting_for_bestmove
-            && !self.game.is_game_over()
+            && self.game.outcome().is_none()
             && self.game.at_end()
             && self.game.current_position().turn() != self.player_color
         {
@@ -888,6 +1017,18 @@ impl eframe::App for ChessyApp {
         }
         if self.interaction.pending_promotion.is_some() {
             self.show_promotion_dialog(&ctx);
+        }
+        if self.show_game_picker {
+            let picked = show_game_picker(
+                &ctx,
+                &self.pgn_games,
+                &mut self.pgn_filter,
+                &mut self.show_game_picker,
+                self.pgn_current,
+            );
+            if let Some(idx) = picked {
+                self.pick_game(idx);
+            }
         }
 
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
@@ -932,14 +1073,49 @@ impl eframe::App for ChessyApp {
                     Color32::from_rgb(30, 30, 30)
                 };
 
+                let start_board = self.game.start_position().board();
+                let board = self.game.current_position().board();
+                let white_lost = captured_pieces(start_board, board, PieceColor::White);
+                let black_lost = captured_pieces(start_board, board, PieceColor::Black);
+                let balance = material_balance(board);
+
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
                     ui.label(RichText::new(black).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::White,
+                        &white_lost,
+                        -balance,
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("♙ ").color(Color32::WHITE));
                     ui.label(RichText::new(white).color(text_col).strong());
+                    show_captured(
+                        ui,
+                        &self.piece_textures,
+                        PieceColor::Black,
+                        &black_lost,
+                        balance,
+                    );
                 });
+
+                if let Some(opening) = OpeningBook::builtin().lookup(&self.game) {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&opening.eco)
+                                .small()
+                                .strong()
+                                .color(Color32::from_rgb(220, 180, 50)),
+                        );
+                        ui.label(RichText::new(&opening.name).small().color(text_col));
+                    })
+                    .response
+                    .on_hover_text("Opening");
+                }
 
                 ui.separator();
 
@@ -1010,6 +1186,7 @@ impl eframe::App for ChessyApp {
                     });
                 }
 
+                let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
                 let board_size = available.width().min(available.height());
                 let board_rect =
@@ -1020,7 +1197,7 @@ impl eframe::App for ChessyApp {
                         SetupBoardWidget::new(
                             &mut self.setup_board,
                             self.flipped,
-                            self.settings.dark_theme,
+                            board_style,
                             self.setup_palette,
                             &self.piece_textures,
                         )
@@ -1032,39 +1209,59 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    // A rule draw ends the game against the engine; analysis may play on.
+                    AppMode::Play => {
+                        !self.waiting_for_bestmove
+                            && self.game.outcome().is_none()
+                            && self.game.at_end()
+                    }
                     AppMode::Setup => unreachable!(),
                 };
 
-                // The engine's first choice, shown only while analyzing.
                 let engine_arrow = (self.mode == AppMode::Analyze && self.settings.engine_arrow)
                     .then(|| self.engine_lines.first())
                     .flatten()
                     .and_then(|line| line.pv.first())
                     .and_then(|uci| uci_squares(uci));
 
+                let mut move_sound = None;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
-                    if let Some(event) = BoardWidget::new(
+                    move_sound = BoardWidget::new(
                         &mut self.game,
                         self.flipped,
-                        self.settings.dark_theme,
+                        board_style,
                         is_interactive,
                         &mut self.interaction,
                         &self.piece_textures,
                     )
                     .with_engine_arrow(engine_arrow)
-                    .show(ui)
-                        && let Some(audio) = &self.audio
-                    {
-                        audio.play(event);
-                    }
+                    .show(ui);
                 });
+                if let Some(event) = move_sound {
+                    self.play_move_sound(event);
+                }
             });
 
         // Request continuous repaint while engine is running
         if self.engine_running || self.interaction.drag_from.is_some() {
             ctx.request_repaint();
         }
+    }
+}
+
+/// `player` is the human's colour when playing the engine.
+fn game_end_sound(
+    event: SoundEvent,
+    outcome: Option<Outcome>,
+    player: Option<PieceColor>,
+) -> SoundEvent {
+    match outcome {
+        Some(Outcome::Checkmate { winner }) => match player {
+            Some(color) if color != winner => SoundEvent::Defeat,
+            _ => SoundEvent::Victory,
+        },
+        Some(o) if o.is_draw() => SoundEvent::Draw,
+        _ => event,
     }
 }
 
@@ -1120,6 +1317,43 @@ mod tests {
 
     fn place(board: &mut Board, sq: Square, color: PieceColor, role: Role) {
         board.set_piece_at(sq, Piece { color, role });
+    }
+
+    #[test]
+    fn game_end_sound_depends_on_who_won() {
+        let white_mates = Some(Outcome::Checkmate {
+            winner: PieceColor::White,
+        });
+        let e = SoundEvent::Checkmate;
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::White)),
+            SoundEvent::Victory
+        );
+        assert_eq!(
+            game_end_sound(e, white_mates, Some(PieceColor::Black)),
+            SoundEvent::Defeat
+        );
+        assert_eq!(game_end_sound(e, white_mates, None), SoundEvent::Victory);
+    }
+
+    #[test]
+    fn game_end_sound_for_draws_and_ordinary_moves() {
+        assert_eq!(
+            game_end_sound(
+                SoundEvent::Capture,
+                Some(Outcome::ThreefoldRepetition),
+                Some(PieceColor::White)
+            ),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Move, Some(Outcome::FiftyMoveRule), None),
+            SoundEvent::Draw
+        );
+        assert_eq!(
+            game_end_sound(SoundEvent::Capture, None, None),
+            SoundEvent::Capture
+        );
     }
 
     #[test]
