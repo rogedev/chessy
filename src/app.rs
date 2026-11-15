@@ -27,6 +27,10 @@ const SHORTCUT_OPEN_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::O);
 const SHORTCUT_SAVE_PGN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S);
+const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    Key::C,
+);
 
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
@@ -64,9 +68,7 @@ pub struct ChessyApp {
     setup_turn: PieceColor,
     setup_palette: Option<Piece>,
     setup_error: Option<String>,
-    /// Every game from the most recently opened PGN.
     pgn_games: Vec<Game>,
-    /// Index into `pgn_games` of the game currently on the board.
     pgn_current: Option<usize>,
     pgn_filter: String,
     show_game_picker: bool,
@@ -106,7 +108,6 @@ impl ChessyApp {
             show_game_picker: false,
         };
 
-        // `chessy game.pgn` opens that file on launch.
         if let Some(arg) = std::env::args().nth(1)
             && let Ok(games) = pgn::load_pgn(Path::new(&arg))
         {
@@ -281,8 +282,6 @@ impl ChessyApp {
         }
     }
 
-    /// Take ownership of a set of loaded games. The first one goes on the
-    /// board; when there are several, the picker opens so the user can choose.
     fn open_games(&mut self, games: Vec<Game>) {
         let Some(first) = games.first().cloned() else {
             return;
@@ -328,6 +327,12 @@ impl ChessyApp {
         }
     }
 
+    fn copy_pgn(&self) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(self.game.to_pgn());
+        }
+    }
+
     fn copy_fen(&self) {
         if let Ok(mut clipboard) = arboard::Clipboard::new() {
             let _ = clipboard.set_text(self.game.current_fen());
@@ -335,13 +340,18 @@ impl ChessyApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &Context) {
-        let (new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
+        let (copy_pgn, new_game, open_pgn, save_pgn) = ctx.input_mut(|i| {
             (
+                i.consume_shortcut(&SHORTCUT_COPY_PGN),
                 i.consume_shortcut(&SHORTCUT_NEW_GAME),
                 i.consume_shortcut(&SHORTCUT_OPEN_PGN),
                 i.consume_shortcut(&SHORTCUT_SAVE_PGN),
             )
         });
+
+        if copy_pgn {
+            self.copy_pgn();
+        }
 
         if new_game {
             self.new_game();
@@ -440,6 +450,10 @@ impl ChessyApp {
                 ui.separator();
                 if menu_item(ui, "Copy FEN", None) {
                     self.copy_fen();
+                    ui.close();
+                }
+                if menu_item(ui, "Copy PGN", Some(&SHORTCUT_COPY_PGN)) {
+                    self.copy_pgn();
                     ui.close();
                 }
                 if menu_item(ui, "Paste FEN / PGN", None) {
@@ -1072,7 +1086,8 @@ impl eframe::App for ChessyApp {
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
-                    AppMode::Play => !self.waiting_for_bestmove,
+                    // Against the engine, moves are only made at the end of the game.
+                    AppMode::Play => !self.waiting_for_bestmove && self.game.at_end(),
                     AppMode::Setup => unreachable!(),
                 };
 

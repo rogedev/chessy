@@ -2,7 +2,6 @@ use egui::{Color32, Context, RichText, ScrollArea};
 
 use crate::chess::Game;
 
-/// One row of the game picker, extracted from a game's PGN headers.
 #[derive(Debug, PartialEq)]
 pub struct GameSummary {
     pub white: String,
@@ -29,13 +28,11 @@ impl GameSummary {
             result: tag("Result", "*"),
             date: tag("Date", ""),
             event: tag("Event", ""),
-            // Full moves, rounded up so a game ending on White's move counts.
+            // Rounded up so a game ending on White's move counts.
             moves: game.moves.len().div_ceil(2),
         }
     }
 
-    /// Case-insensitive match against players, event and date. An empty
-    /// filter matches everything.
     pub fn matches(&self, filter: &str) -> bool {
         let needle = filter.trim().to_lowercase();
         if needle.is_empty() {
@@ -47,8 +44,6 @@ impl GameSummary {
     }
 }
 
-/// Show the list of games loaded from a PGN file. Returns the index of the
-/// game the user picked, if any.
 pub fn show_game_picker(
     ctx: &Context,
     games: &[Game],
@@ -156,7 +151,6 @@ mod tests {
         assert_eq!(s.result, "1-0");
         assert_eq!(s.date, "2024.05.01");
         assert_eq!(s.event, "Club Championship");
-        // Three plies round up to two full moves.
         assert_eq!(s.moves, 2);
     }
 
