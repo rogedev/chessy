@@ -728,7 +728,6 @@ impl ChessyApp {
                     }
                     for theme in BOARD_THEMES {
                         let selected = board_theme.eq_ignore_ascii_case(theme.name);
-                        // Two-square swatch followed by the theme name.
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
                         let (left, right) = rect.split_left_right_at_fraction(0.5);
