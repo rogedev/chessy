@@ -4,13 +4,10 @@ use shakmaty::{Color as PieceColor, Piece, Role};
 use super::board::PieceTextures;
 
 const ICON: f32 = 16.0;
-/// Horizontal step between icons of the same kind; smaller than the icon so
-/// identical pieces overlap like a fanned stack.
+/// Smaller than the icon so identical pieces overlap.
 const SAME_STEP: f32 = 8.0;
 const GROUP_GAP: f32 = 3.0;
 
-/// Draw the pieces a player has captured, followed by `+N` when that player
-/// is ahead on material.
 pub fn show_captured(
     ui: &mut Ui,
     textures: &PieceTextures,
@@ -19,7 +16,6 @@ pub fn show_captured(
     advantage: i32,
 ) {
     if !captured.is_empty() {
-        // Width: one full icon per group plus a partial step per repeat.
         let groups = captured.windows(2).filter(|w| w[0] != w[1]).count() + 1;
         let repeats = captured.len() - groups;
         let width =
