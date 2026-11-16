@@ -10,11 +10,45 @@
 
 ## Features
 
-- Native desktop UI powered by [egui](https://github.com/emilk/egui)
-- [Stockfish](https://stockfishchess.org/) engine integration with multi-line evaluation
-- Evaluation panel with score, depth, and suggested move sequences
-- PGN import/export
-- Move history navigation
+**Analysis**
+
+- [Stockfish](https://stockfishchess.org/) engine integration with multi-line evaluation, depth, and suggested move sequences
+- Best-move arrow on the board, plus your own arrows and square marks (right-drag and right-click)
+- Game review: accuracy per side, inaccuracy / mistake / blunder marks in the move list, and a clickable evaluation graph
+- Opening names with ECO codes, matched by position so transpositions are recognised
+- Variations: try another move at any point without losing the original line, switch between lines, promote or delete them
+- Set up any position, or paste a FEN
+
+**Playing against the engine**
+
+- Strength presets or a custom Elo limit
+- Chess clocks: 1+0, 3+2, 5+0, 10+0, 15+10 and 30+0, with increments and loss on time
+- Takeback, hint and resign, and "Play from Current Position" to continue any position against the engine
+- Draws by threefold repetition and the fifty-move rule, with sounds for moves, captures, draws, wins and losses
+
+**Games and files**
+
+- PGN import and export, including variations; Copy PGN to the clipboard
+- Multi-game PGN files open in a game picker with filtering
+- `chessy game.pgn` opens a file on launch
+
+**Board and interface**
+
+- Native desktop UI powered by [egui](https://github.com/emilk/egui), with dark and light themes
+- Three piece sets and four board colour themes, optional coordinates, and move animation
+- Captured pieces and material balance beside the player names
+- Move history navigation and board flipping
+
+## Controls
+
+| Action | Control |
+|---|---|
+| Step through moves | `←` / `→`, `Home` / `End` |
+| Flip board | `F` |
+| New game, open PGN, save PGN | `Ctrl/Cmd+N`, `Ctrl/Cmd+O`, `Ctrl/Cmd+S` |
+| Copy PGN | `Ctrl/Cmd+Shift+C` |
+| Draw an arrow / mark a square | Right-drag / right-click on the board |
+| Clear arrows and marks | Left-click on the board |
 
 ## Install
 
