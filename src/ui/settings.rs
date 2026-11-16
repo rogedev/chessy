@@ -19,6 +19,8 @@ pub struct Settings {
     pub board_theme: String,
     #[serde(default = "default_true")]
     pub show_coordinates: bool,
+    #[serde(default = "default_time_control")]
+    pub time_control: String,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             engine_arrow: true,
             board_theme: String::new(),
             show_coordinates: true,
+            time_control: default_time_control(),
         }
     }
 }
@@ -62,6 +65,10 @@ impl Settings {
 
 fn config_path() -> Option<std::path::PathBuf> {
     dirs_next::config_dir().map(|d| d.join("chessy").join("settings.json"))
+}
+
+fn default_time_control() -> String {
+    "Unlimited".to_string()
 }
 
 fn default_true() -> bool {
@@ -111,6 +118,7 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.piece_set, "cburnett");
+        assert_eq!(s.time_control, "Unlimited");
         assert!(s.animate_moves);
         assert!(s.engine_arrow);
         assert_eq!(s.board_theme, "");

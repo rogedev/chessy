@@ -3,7 +3,8 @@ use shakmaty::Color as PieceColor;
 
 use shakmaty::Position;
 
-use crate::chess::Game;
+use super::graph::class_color;
+use crate::chess::{Game, review::MoveClass};
 
 /// Something the user asked for in the move list. Collected while drawing
 /// and applied afterwards, so the list never changes under the loop.
@@ -28,7 +29,12 @@ fn move_number(ply: usize) -> String {
 
 /// Draw the move list with its variations. Returns true when the displayed
 /// position changed because of a click.
-pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool {
+pub fn show_moves_panel(
+    ui: &mut Ui,
+    game: &mut Game,
+    dark_theme: bool,
+    classes: Option<&[MoveClass]>,
+) -> bool {
     let active_color = if dark_theme {
         Color32::from_rgb(100, 160, 240)
     } else {
@@ -75,19 +81,14 @@ pub fn show_moves_panel(ui: &mut Ui, game: &mut Game, dark_theme: bool) -> bool 
                 ui.horizontal_wrapped(|ui| {
                     let white_to_move = (i + offset).is_multiple_of(2);
                     ui.label(num_label(move_number(i + offset)));
-                    render_move_button(ui, game, i, cursor, active_color, text_color, &mut action);
+                    let class = classes.and_then(|c| c.get(i)).copied();
+                    let colors = (active_color, text_color);
+                    render_move_button(ui, game, i, cursor, colors, class, &mut action);
                     i += 1;
 
                     if white_to_move && i < move_count {
-                        render_move_button(
-                            ui,
-                            game,
-                            i,
-                            cursor,
-                            active_color,
-                            text_color,
-                            &mut action,
-                        );
+                        let class = classes.and_then(|c| c.get(i)).copied();
+                        render_move_button(ui, game, i, cursor, colors, class, &mut action);
                         i += 1;
                     }
                 });
@@ -143,17 +144,21 @@ fn render_move_button(
     game: &Game,
     index: usize,
     cursor: usize,
-    active_color: Color32,
-    text_color: Color32,
+    (active_color, text_color): (Color32, Color32),
+    class: Option<MoveClass>,
     action: &mut Option<Action>,
 ) {
     let color = if cursor == index + 1 {
         active_color
     } else {
-        text_color
+        class.and_then(class_color).unwrap_or(text_color)
     };
     let is_main = game.is_main_move(index);
-    let mut label = RichText::new(game.san[index].as_str())
+    let text = match class {
+        Some(c) => format!("{}{}", game.san[index], c.symbol()),
+        None => game.san[index].clone(),
+    };
+    let mut label = RichText::new(text)
         .font(FontId::proportional(13.0))
         .color(color)
         .strong();
@@ -162,7 +167,16 @@ fn render_move_button(
         label = label.italics();
     }
 
-    let response = ui.button(label);
+    let mut response = ui.button(label);
+    if let Some(c) = class {
+        response = response.on_hover_text(match c {
+            MoveClass::Best => "Best move",
+            MoveClass::Good => "Good move",
+            MoveClass::Inaccuracy => "Inaccuracy",
+            MoveClass::Mistake => "Mistake",
+            MoveClass::Blunder => "Blunder",
+        });
+    }
     if response.clicked() {
         *action = Some(Action::GoTo(index + 1));
     }
