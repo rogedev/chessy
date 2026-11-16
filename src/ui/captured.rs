@@ -40,7 +40,7 @@ pub fn show_captured(
                 color: captured_color,
                 role,
             };
-            if let Some(tex) = textures.get(piece) {
+            if let Some(tex) = textures.get(ui.ctx(), piece, ICON * ui.ctx().pixels_per_point()) {
                 let icon = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::splat(ICON));
                 ui.painter().image(tex.id(), icon, uv, Color32::WHITE);
             }

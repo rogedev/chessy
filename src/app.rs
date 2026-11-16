@@ -113,7 +113,7 @@ impl ChessyApp {
         let settings = Settings::load();
 
         let engine = UciClient::new(Path::new(&settings.engine_path)).ok();
-        let piece_textures = PieceTextures::load(&_cc.egui_ctx, &settings.piece_set);
+        let piece_textures = PieceTextures::load(&settings.piece_set);
 
         let mut app = Self {
             game: Game::new(),
@@ -1145,7 +1145,7 @@ impl ChessyApp {
             self.settings.save();
             self.reconnect_engine();
             self.start_analysis();
-            self.piece_textures = PieceTextures::load(ctx, &self.settings.piece_set);
+            self.piece_textures = PieceTextures::load(&self.settings.piece_set);
         }
     }
 
@@ -1334,7 +1334,8 @@ impl ChessyApp {
                 for role in roles {
                     let piece = Piece { color, role };
                     let selected = self.setup_palette == Some(piece);
-                    if let Some(tex) = self.piece_textures.get(piece) {
+                    let size_px = 30.0 * ui.ctx().pixels_per_point();
+                    if let Some(tex) = self.piece_textures.get(ui.ctx(), piece, size_px) {
                         let img = egui::Image::from_texture(egui::load::SizedTexture::new(
                             tex.id(),
                             egui::vec2(30.0, 30.0),
@@ -1412,7 +1413,9 @@ impl ChessyApp {
                             Role::Knight => "Knight",
                             _ => unreachable!(),
                         };
-                        let clicked = match self.piece_textures.get(Piece { color, role }) {
+                        let piece = Piece { color, role };
+                        let size_px = 56.0 * ui.ctx().pixels_per_point();
+                        let clicked = match self.piece_textures.get(ui.ctx(), piece, size_px) {
                             Some(tex) => {
                                 let img = egui::Image::from_texture(egui::load::SizedTexture::new(
                                     tex.id(),

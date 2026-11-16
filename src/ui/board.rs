@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, TextureHandle, Ui, Vec2};
 use resvg::{tiny_skia, usvg};
@@ -27,26 +27,47 @@ const PIECE_NAMES: &[(&str, PieceColor, Role)] = &[
 ];
 
 pub struct PieceTextures {
-    handles: HashMap<(PieceColor, Role), TextureHandle>,
+    trees: HashMap<(PieceColor, Role), usvg::Tree>,
+    cache: RefCell<HashMap<(PieceColor, Role, u32), TextureHandle>>,
 }
 
 impl PieceTextures {
-    pub fn load(ctx: &egui::Context, set_name: &str) -> Self {
-        let handles = PIECE_NAMES
+    pub fn load(set_name: &str) -> Self {
+        let opts = usvg::Options::default();
+        let trees = PIECE_NAMES
             .iter()
             .filter_map(|&(name, color, role)| {
                 let path = crate::paths::asset_path(&format!("pieces/{}/{}.svg", set_name, name));
                 let bytes = std::fs::read(path).ok()?;
-                let handle = rasterize_svg(ctx, name, &bytes, 256)?;
-                Some(((color, role), handle))
+                let tree = usvg::Tree::from_data(&bytes, &opts).ok()?;
+                Some(((color, role), tree))
             })
             .collect();
-        Self { handles }
+        Self {
+            trees,
+            cache: RefCell::default(),
+        }
     }
 
-    pub fn get(&self, piece: Piece) -> Option<&TextureHandle> {
-        self.handles.get(&(piece.color, piece.role))
+    /// Rendered close to `size_px` physical pixels, so it is drawn almost 1:1.
+    pub fn get(&self, ctx: &egui::Context, piece: Piece, size_px: f32) -> Option<TextureHandle> {
+        let key = (piece.color, piece.role, texture_size(size_px));
+        if let Some(handle) = self.cache.borrow().get(&key) {
+            return Some(handle.clone());
+        }
+        let tree = self.trees.get(&(piece.color, piece.role))?;
+        let handle = rasterize_svg(ctx, tree, key.2)?;
+        self.cache.borrow_mut().insert(key, handle.clone());
+        Some(handle)
     }
+}
+
+/// Multiples of 16, so resizing the window does not render a new texture every frame.
+fn texture_size(size_px: f32) -> u32 {
+    (size_px.ceil().max(1.0) as u32)
+        .div_ceil(16)
+        .saturating_mul(16)
+        .clamp(16, 1024)
 }
 
 pub fn available_piece_sets() -> Vec<String> {
@@ -61,22 +82,19 @@ pub fn available_piece_sets() -> Vec<String> {
     sets
 }
 
-fn rasterize_svg(
-    ctx: &egui::Context,
-    name: &str,
-    bytes: &[u8],
-    target: u32,
-) -> Option<TextureHandle> {
-    let opts = usvg::Options::default();
-    let tree = usvg::Tree::from_data(bytes, &opts).ok()?;
+fn rasterize_svg(ctx: &egui::Context, tree: &usvg::Tree, target: u32) -> Option<TextureHandle> {
     let svg_size = tree.size();
     let scale = target as f32 / svg_size.width().max(svg_size.height());
     let transform = tiny_skia::Transform::from_scale(scale, scale);
     let mut pixmap = tiny_skia::Pixmap::new(target, target)?;
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    resvg::render(tree, transform, &mut pixmap.as_mut());
     let color_image =
         egui::ColorImage::from_rgba_unmultiplied([target as usize, target as usize], pixmap.data());
-    Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
+    Some(ctx.load_texture(
+        format!("piece-{target}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -286,7 +304,7 @@ impl<'a> BoardWidget<'a> {
                     && !self.interaction.animator.hides(sq)
                     && let Some(piece) = board.piece_at(sq)
                 {
-                    draw_piece(&painter, sq_rect, self.piece_textures.get(piece));
+                    draw_piece(&painter, sq_rect, self.piece_textures, piece);
                 }
             }
         }
@@ -296,7 +314,7 @@ impl<'a> BoardWidget<'a> {
                 let start = sq_to_rect(slide.start, rect, sq_size, self.flipped);
                 let end = sq_to_rect(slide.end, rect, sq_size, self.flipped);
                 let moving = start.translate((end.min - start.min) * t);
-                draw_piece(&painter, moving, self.piece_textures.get(piece));
+                draw_piece(&painter, moving, self.piece_textures, piece);
             }
         }
         if self.interaction.animator.is_active() {
@@ -379,7 +397,7 @@ impl<'a> BoardWidget<'a> {
             && let Some(piece) = board.piece_at(from_sq)
         {
             let drag_rect = Rect::from_center_size(cursor_pos, Vec2::splat(sq_size));
-            draw_piece(&painter, drag_rect, self.piece_textures.get(piece));
+            draw_piece(&painter, drag_rect, self.piece_textures, piece);
         }
 
         // Moves may be made from any position of the game: playing one in
@@ -500,7 +518,7 @@ impl<'a> SetupBoardWidget<'a> {
                 painter.rect_filled(sq_rect, 0.0, sq_color);
 
                 if let Some(piece) = self.board.piece_at(sq) {
-                    draw_piece(&painter, sq_rect, self.piece_textures.get(piece));
+                    draw_piece(&painter, sq_rect, self.piece_textures, piece);
                 }
             }
         }
@@ -672,11 +690,20 @@ fn try_make_move(game: &mut Game, from: Square, to: Square) -> Option<SoundEvent
     Some(sound_for_move(&m, game.current_position()))
 }
 
-fn draw_piece(painter: &Painter, rect: Rect, texture: Option<&TextureHandle>) {
-    if let Some(tex) = texture {
-        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+fn draw_piece(painter: &Painter, rect: Rect, textures: &PieceTextures, piece: Piece) {
+    let ppp = painter.ctx().pixels_per_point();
+    let rect = snap_rect(rect, ppp);
+    if let Some(tex) = textures.get(painter.ctx(), piece, rect.width() * ppp) {
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
+}
+
+/// Whole physical pixels in position and size, so textures are not resampled at half-pixel offsets.
+fn snap_rect(rect: Rect, pixels_per_point: f32) -> Rect {
+    let snap = |v: f32| (v * pixels_per_point).round() / pixels_per_point;
+    let size = Vec2::new(snap(rect.width()), snap(rect.height()));
+    Rect::from_min_size(Pos2::new(snap(rect.min.x), snap(rect.min.y)), size)
 }
 
 fn draw_labels(
@@ -989,5 +1016,38 @@ mod tests {
         let mut game = Game::from_fen("4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1").expect("valid fen");
         assert!(try_make_move(&mut game, Square::E1, Square::G1).is_none());
         assert_eq!(game.cursor, 0);
+    }
+
+    #[test]
+    fn texture_size_rounds_up_to_multiples_of_16() {
+        assert_eq!(texture_size(1.0), 16);
+        assert_eq!(texture_size(16.0), 16);
+        assert_eq!(texture_size(16.1), 32);
+        assert_eq!(texture_size(87.0), 96);
+        assert_eq!(texture_size(174.0), 176);
+    }
+
+    #[test]
+    fn texture_size_is_bounded() {
+        assert_eq!(texture_size(0.0), 16);
+        assert_eq!(texture_size(-5.0), 16);
+        assert_eq!(texture_size(100_000.0), 1024);
+    }
+
+    #[test]
+    fn snap_rect_lands_on_whole_pixels() {
+        let r = snap_rect(
+            Rect::from_min_size(Pos2::new(10.3, 20.6), Vec2::splat(87.4)),
+            1.0,
+        );
+        assert_eq!(r.min, Pos2::new(10.0, 21.0));
+        assert_eq!(r.size(), Vec2::splat(87.0));
+
+        let r = snap_rect(
+            Rect::from_min_size(Pos2::new(10.3, 20.6), Vec2::splat(87.4)),
+            2.0,
+        );
+        assert_eq!(r.min, Pos2::new(10.5, 20.5));
+        assert_eq!(r.size(), Vec2::splat(87.5));
     }
 }
