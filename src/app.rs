@@ -1557,43 +1557,50 @@ impl eframe::App for ChessyApp {
                 let black_lost = captured_pieces(start_board, board, PieceColor::Black);
                 let balance = material_balance(board);
 
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
-                    ui.label(RichText::new(black).color(text_col).strong());
-                    show_captured(
-                        ui,
-                        &self.piece_textures,
-                        PieceColor::White,
-                        &white_lost,
-                        -balance,
-                        &palette,
-                    );
-                    show_clock(ui, clock.as_ref(), PieceColor::Black, text_col);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("♙ ").color(Color32::WHITE));
-                    ui.label(RichText::new(white).color(text_col).strong());
-                    show_captured(
-                        ui,
-                        &self.piece_textures,
-                        PieceColor::Black,
-                        &black_lost,
-                        balance,
-                        &palette,
-                    );
-                    show_clock(ui, clock.as_ref(), PieceColor::White, text_col);
-                });
+                for (name, side, lost, advantage) in [
+                    (black, PieceColor::Black, &white_lost, -balance),
+                    (white, PieceColor::White, &black_lost, balance),
+                ] {
+                    ui.horizontal(|ui| {
+                        let (dot, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
+                        let fill = if side == PieceColor::White {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_gray(25)
+                        };
+                        ui.painter().circle(
+                            dot.center(),
+                            5.5,
+                            fill,
+                            egui::Stroke::new(1.0_f32, palette.text_weak),
+                        );
+                        ui.label(RichText::new(name).color(text_col).strong().size(15.0));
+                        show_clock(ui, clock.as_ref(), side, text_col);
+                    });
+                    if lost.is_empty() && advantage <= 0 {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        show_captured(ui, &self.piece_textures, !side, lost, advantage, &palette);
+                    });
+                }
 
                 if let Some(opening) = OpeningBook::builtin().lookup(&self.game) {
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(&opening.eco)
                                 .small()
                                 .strong()
-                                .color(Color32::from_rgb(220, 180, 50)),
+                                .color(palette.accent),
                         );
-                        ui.label(RichText::new(&opening.name).small().color(text_col));
+                        ui.label(
+                            RichText::new(&opening.name)
+                                .small()
+                                .color(palette.text_weak),
+                        );
                     })
                     .response
                     .on_hover_text("Opening");
@@ -1654,12 +1661,7 @@ impl eframe::App for ChessyApp {
                 let available = ui.available_size();
                 ui.allocate_ui(available, |ui| {
                     let classes = self.current_review().map(Review::classes);
-                    if show_moves_panel(
-                        ui,
-                        &mut self.game,
-                        self.settings.dark_theme,
-                        classes.as_deref(),
-                    ) {
+                    if show_moves_panel(ui, &mut self.game, &palette, classes.as_deref()) {
                         self.play_nav_sound();
                     }
                 });

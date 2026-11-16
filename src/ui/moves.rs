@@ -1,10 +1,15 @@
-use egui::{Color32, FontId, RichText, ScrollArea, Ui};
+use egui::{Color32, FontId, RichText, ScrollArea, Stroke, Ui, Vec2};
 use shakmaty::Color as PieceColor;
 
 use shakmaty::Position;
 
 use super::graph::class_color;
+use super::theme::Palette;
 use crate::chess::{Game, review::MoveClass};
+
+const NUMBER_WIDTH: f32 = 30.0;
+const CELL_WIDTH: f32 = 68.0;
+const CELL_HEIGHT: f32 = 22.0;
 
 /// Something the user asked for in the move list. Collected while drawing
 /// and applied afterwards, so the list never changes under the loop.
@@ -32,23 +37,11 @@ fn move_number(ply: usize) -> String {
 pub fn show_moves_panel(
     ui: &mut Ui,
     game: &mut Game,
-    dark_theme: bool,
+    palette: &Palette,
     classes: Option<&[MoveClass]>,
 ) -> bool {
-    let active_color = if dark_theme {
-        Color32::from_rgb(100, 160, 240)
-    } else {
-        Color32::from_rgb(30, 100, 200)
-    };
-    let text_color = if dark_theme {
-        Color32::from_rgb(220, 220, 220)
-    } else {
-        Color32::from_rgb(30, 30, 30)
-    };
-
     let move_text =
         |san: &str, font_size: f32| RichText::new(san).font(FontId::proportional(font_size));
-    let num_label = |text: String| move_text(&text, 13.0).color(Color32::GRAY);
 
     let move_count = game.moves.len();
     let cursor = game.cursor;
@@ -66,7 +59,7 @@ pub fn show_moves_panel(
             if move_count == 0 {
                 ui.label(
                     move_text("No moves yet", 13.0)
-                        .color(Color32::GRAY)
+                        .color(palette.text_weak)
                         .italics(),
                 );
                 return;
@@ -78,20 +71,37 @@ pub fn show_moves_panel(
             while i < move_count {
                 let row_start = i;
 
-                ui.horizontal_wrapped(|ui| {
+                let band = ui.painter().add(egui::Shape::Noop);
+                let row = ui.horizontal(|ui| {
                     let white_to_move = (i + offset).is_multiple_of(2);
-                    ui.label(num_label(move_number(i + offset)));
+                    let (num_rect, _) = ui.allocate_exact_size(
+                        Vec2::new(NUMBER_WIDTH, CELL_HEIGHT),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().text(
+                        num_rect.right_center(),
+                        egui::Align2::RIGHT_CENTER,
+                        move_number(i + offset),
+                        FontId::proportional(13.0),
+                        palette.text_weak,
+                    );
                     let class = classes.and_then(|c| c.get(i)).copied();
-                    let colors = (active_color, text_color);
-                    render_move_button(ui, game, i, cursor, colors, class, &mut action);
+                    render_move_button(ui, game, i, cursor, palette, class, &mut action);
                     i += 1;
 
                     if white_to_move && i < move_count {
                         let class = classes.and_then(|c| c.get(i)).copied();
-                        render_move_button(ui, game, i, cursor, colors, class, &mut action);
+                        render_move_button(ui, game, i, cursor, palette, class, &mut action);
                         i += 1;
                     }
                 });
+                if (row_start + offset) / 2 % 2 == 1 {
+                    let rect = row.response.rect.expand2(Vec2::new(4.0, 0.0));
+                    ui.painter().set(
+                        band,
+                        egui::Shape::rect_filled(rect, 3.0, palette.chip.gamma_multiply(0.35)),
+                    );
+                }
 
                 // Other moves tried in place of the ones on this row.
                 for ply in row_start..i {
@@ -101,10 +111,10 @@ pub fn show_moves_panel(
                     }
                     ui.horizontal_wrapped(|ui| {
                         ui.add_space(14.0);
-                        ui.label(move_text("or", 11.0).color(Color32::GRAY).italics());
+                        ui.label(move_text("or", 11.0).color(palette.text_weak).italics());
                         for (node, san) in alternatives {
                             let text = format!("{} {}", move_number(ply + offset), san);
-                            let label = move_text(&text, 12.0).color(Color32::GRAY).italics();
+                            let label = move_text(&text, 12.0).color(palette.text_weak).italics();
                             if ui
                                 .button(label)
                                 .on_hover_text("Switch to this line")
@@ -144,14 +154,15 @@ fn render_move_button(
     game: &Game,
     index: usize,
     cursor: usize,
-    (active_color, text_color): (Color32, Color32),
+    palette: &Palette,
     class: Option<MoveClass>,
     action: &mut Option<Action>,
 ) {
-    let color = if cursor == index + 1 {
-        active_color
+    let current = cursor == index + 1;
+    let color = if current {
+        palette.background
     } else {
-        class.and_then(class_color).unwrap_or(text_color)
+        class.and_then(class_color).unwrap_or(palette.text)
     };
     let is_main = game.is_main_move(index);
     let text = match class {
@@ -167,7 +178,17 @@ fn render_move_button(
         label = label.italics();
     }
 
-    let mut response = ui.button(label);
+    let fill = if current {
+        palette.accent
+    } else {
+        Color32::TRANSPARENT
+    };
+    let mut response = ui.add(
+        egui::Button::new(label)
+            .fill(fill)
+            .stroke(Stroke::NONE)
+            .min_size(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
+    );
     if let Some(c) = class {
         response = response.on_hover_text(match c {
             MoveClass::Best => "Best move",
