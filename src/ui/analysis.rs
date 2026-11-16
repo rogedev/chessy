@@ -3,57 +3,75 @@ use shakmaty::{Chess, Position, uci::UciMove};
 
 use crate::engine::{EngineInfo, Score};
 
-pub fn show_eval_bar(ui: &mut Ui, score: Option<&Score>, _white_to_move: bool) {
-    let (total_width, bar_height) = (ui.available_width(), 20.0);
-    let (response, painter) =
-        ui.allocate_painter(Vec2::new(total_width, bar_height), egui::Sense::hover());
-    let rect = response.rect;
+/// Share of the bar that belongs to White, from 0 to 1. Uses the same
+/// logistic curve as Lichess so small edges still register visually.
+pub fn white_fraction(score: Option<&Score>) -> f32 {
+    let cp = score.map_or(0.0, Score::as_cp_f32);
+    0.5 + 0.5 * (2.0 / (1.0 + (-0.003_682_08 * cp).exp()) - 1.0)
+}
 
-    let cp = score.map(|s| s.as_cp_f32()).unwrap_or(0.0);
-    // Clamp to ±600 cp for display purposes
-    let clamped = cp.clamp(-600.0, 600.0);
-    // white_fraction: 0 = black winning, 1 = white winning
-    let white_frac = (clamped + 600.0) / 1200.0;
+/// Draw a vertical evaluation bar filling `rect`, White at the bottom
+/// unless the board is flipped.
+pub fn show_eval_bar(ui: &mut Ui, rect: Rect, score: Option<&Score>, flipped: bool) {
+    let target = white_fraction(score);
+    let frac = ui
+        .ctx()
+        .animate_value_with_time(ui.id().with("eval_bar"), target, 0.25);
+    let painter = ui.painter();
+    let radius = 4.0;
 
-    let white_width = total_width * white_frac;
+    let light = Color32::from_gray(235);
+    let dark = Color32::from_gray(38);
+    painter.rect_filled(rect, radius, dark);
 
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(220, 220, 220));
-    painter.rect_filled(
-        Rect::from_min_size(rect.min, Vec2::new(white_width, bar_height)),
-        0.0,
-        Color32::WHITE,
-    );
-    painter.rect_filled(
+    let white_height = rect.height() * frac;
+    let white_rect = if flipped {
+        Rect::from_min_size(rect.min, Vec2::new(rect.width(), white_height))
+    } else {
         Rect::from_min_size(
-            egui::Pos2::new(rect.min.x + white_width, rect.min.y),
-            Vec2::new(total_width - white_width, bar_height),
-        ),
-        0.0,
-        Color32::from_rgb(30, 30, 30),
+            egui::pos2(rect.min.x, rect.max.y - white_height),
+            Vec2::new(rect.width(), white_height),
+        )
+    };
+    painter.rect_filled(white_rect, radius, light);
+    painter.line_segment(
+        [rect.left_center(), rect.right_center()],
+        egui::Stroke::new(1.0_f32, Color32::from_gray(128).gamma_multiply(0.5)),
     );
 
-    // Score label
-    if let Some(s) = score {
-        let label = s.display();
-
-        if white_frac > 0.5 {
-            painter.text(
-                egui::Pos2::new(rect.min.x + 4.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &label,
-                FontId::proportional(11.0),
-                Color32::BLACK,
-            );
+    if let Some(score) = score {
+        let white_ahead = target >= 0.5;
+        let at_bottom = white_ahead != flipped;
+        let (pos, align) = if at_bottom {
+            (
+                rect.center_bottom() - Vec2::new(0.0, 4.0),
+                egui::Align2::CENTER_BOTTOM,
+            )
         } else {
-            painter.text(
-                egui::Pos2::new(rect.max.x - 4.0, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                &label,
-                FontId::proportional(11.0),
-                Color32::WHITE,
-            );
-        }
+            (
+                rect.center_top() + Vec2::new(0.0, 4.0),
+                egui::Align2::CENTER_TOP,
+            )
+        };
+        let color = if white_ahead {
+            Color32::from_gray(30)
+        } else {
+            Color32::from_gray(230)
+        };
+        painter.text(
+            pos,
+            align,
+            score.display(),
+            FontId::proportional(11.0),
+            color,
+        );
     }
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0_f32, Color32::from_gray(128).gamma_multiply(0.4)),
+        egui::StrokeKind::Inside,
+    );
 }
 
 pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, dark_theme: bool) {
@@ -167,6 +185,17 @@ pub(crate) fn pv_to_san(position: &Chess, pv: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn white_fraction_is_symmetric_and_bounded() {
+        assert!((white_fraction(None) - 0.5).abs() < 1e-6);
+        let up = white_fraction(Some(&Score::Cp(150)));
+        let down = white_fraction(Some(&Score::Cp(-150)));
+        assert!((up + down - 1.0).abs() < 1e-5);
+        assert!(up > 0.5 && up < 1.0);
+        assert!(white_fraction(Some(&Score::Mate(3))) > 0.99);
+        assert!(white_fraction(Some(&Score::Mate(-3))) < 0.01);
+    }
+
     use super::*;
     use shakmaty::uci::UciMove;
 

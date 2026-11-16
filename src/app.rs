@@ -46,6 +46,8 @@ const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
 const HINT_MOVETIME_MS: u64 = 1500;
 
 const BOARD_MARGIN: f32 = 14.0;
+const EVAL_BAR_WIDTH: f32 = 30.0;
+const EVAL_BAR_GAP: f32 = 10.0;
 
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
@@ -1609,11 +1611,6 @@ impl eframe::App for ChessyApp {
                 ui.separator();
 
                 // Eval bar + analysis lines
-                let eval_ref = self.eval_score.as_ref();
-                let white_turn = self.game.current_position().turn() == PieceColor::White;
-                show_eval_bar(ui, eval_ref, white_turn);
-                ui.add_space(4.0);
-
                 if self.mode == AppMode::Analyze && !self.engine_lines.is_empty() {
                     let pos = self.game.current_position().clone();
                     show_analysis_panel(ui, &self.engine_lines, &pos, self.settings.dark_theme);
@@ -1697,10 +1694,22 @@ impl eframe::App for ChessyApp {
 
                 let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
+                let bar_space = if self.mode == AppMode::Setup {
+                    0.0
+                } else {
+                    EVAL_BAR_WIDTH + EVAL_BAR_GAP
+                };
                 let board_size =
-                    (available.width().min(available.height()) - 2.0 * BOARD_MARGIN).max(80.0);
-                let board_rect =
-                    egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
+                    (available.width().min(available.height()) - 2.0 * BOARD_MARGIN - bar_space)
+                        .max(80.0);
+                let group_width = board_size + bar_space;
+                let board_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        available.center().x - group_width / 2.0 + bar_space,
+                        available.center().y - board_size / 2.0,
+                    ),
+                    egui::Vec2::splat(board_size),
+                );
 
                 if self.mode == AppMode::Setup {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
@@ -1716,6 +1725,12 @@ impl eframe::App for ChessyApp {
 
                     return;
                 }
+
+                let bar_rect = egui::Rect::from_min_size(
+                    egui::pos2(board_rect.min.x - bar_space, board_rect.min.y),
+                    egui::vec2(EVAL_BAR_WIDTH, board_size),
+                );
+                show_eval_bar(ui, bar_rect, self.eval_score.as_ref(), self.flipped);
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
