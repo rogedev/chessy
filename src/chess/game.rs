@@ -1,8 +1,67 @@
 use std::collections::HashMap;
 
 use shakmaty::{
-    CastlingMode, Chess, EnPassantMode, Move, Position, fen::Fen, san::SanPlus, uci::UciMove,
+    CastlingMode, Chess, Color, EnPassantMode, Move, Position, fen::Fen, san::SanPlus, uci::UciMove,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Checkmate { winner: Color },
+    Stalemate,
+    InsufficientMaterial,
+    ThreefoldRepetition,
+    FiftyMoveRule,
+}
+
+impl Outcome {
+    /// Repetition and the fifty-move rule are not terminal: analysis may continue.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Outcome::Checkmate { .. } | Outcome::Stalemate | Outcome::InsufficientMaterial
+        )
+    }
+
+    pub fn is_draw(self) -> bool {
+        !matches!(self, Outcome::Checkmate { .. })
+    }
+
+    pub fn result_tag(self) -> &'static str {
+        match self {
+            Outcome::Checkmate {
+                winner: Color::White,
+            } => "1-0",
+            Outcome::Checkmate {
+                winner: Color::Black,
+            } => "0-1",
+            _ => "1/2-1/2",
+        }
+    }
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Checkmate {
+                winner: Color::White,
+            } => f.write_str("White wins by checkmate"),
+            Outcome::Checkmate {
+                winner: Color::Black,
+            } => f.write_str("Black wins by checkmate"),
+            Outcome::Stalemate => f.write_str("Draw by stalemate"),
+            Outcome::InsufficientMaterial => f.write_str("Draw by insufficient material"),
+            Outcome::ThreefoldRepetition => f.write_str("Draw by threefold repetition"),
+            Outcome::FiftyMoveRule => f.write_str("Draw by the fifty-move rule"),
+        }
+    }
+}
+
+fn same_position(a: &Chess, b: &Chess) -> bool {
+    a.turn() == b.turn()
+        && a.board() == b.board()
+        && a.castles().castling_rights() == b.castles().castling_rights()
+        && a.legal_ep_square() == b.legal_ep_square()
+}
 
 /// One move in the game tree.
 #[derive(Clone)]
@@ -111,6 +170,10 @@ impl Game {
             self.sync_line();
         }
         self.cursor += 1;
+
+        let result = self.outcome().map_or("*", |o| o.result_tag());
+        self.headers
+            .insert("Result".to_string(), result.to_string());
         Ok(())
     }
 
@@ -271,6 +334,24 @@ impl Game {
         self.sync_line();
     }
 
+    /// Also drops side lines.
+    pub fn truncate_to(&mut self, ply: usize) {
+        let ply = ply.min(self.line.len());
+        let parent = ply.checked_sub(1).map(|i| self.line[i]);
+        self.children_of_mut(parent).clear();
+        self.line.truncate(ply);
+        self.sync_line();
+        self.cursor = ply;
+    }
+
+    pub fn take_back(&mut self, plies: usize) {
+        self.truncate_to(self.moves.len().saturating_sub(plies));
+    }
+
+    pub fn truncate_to_cursor(&mut self) {
+        self.truncate_to(self.cursor);
+    }
+
     /// Returns UCI move strings for positions[0..cursor].
     pub fn uci_moves_to_cursor(&self) -> Vec<String> {
         self.moves[..self.cursor]
@@ -280,34 +361,54 @@ impl Game {
             .collect()
     }
 
+    pub fn start_fen(&self) -> String {
+        Fen::from_position(self.start_position(), EnPassantMode::Legal).to_string()
+    }
+
     /// FEN of the current position.
     pub fn current_fen(&self) -> String {
         Fen::from_position(self.current_position(), EnPassantMode::Legal).to_string()
     }
 
-    /// Whether the game is over at the current position.
+    /// Checkmate, stalemate or insufficient material. History-based draws come from `outcome`.
     pub fn is_game_over(&self) -> bool {
-        let pos = self.current_position();
-        pos.is_checkmate() || pos.is_stalemate() || pos.is_insufficient_material()
+        self.outcome().is_some_and(|o| o.is_terminal())
     }
 
-    pub fn outcome_string(&self) -> Option<String> {
+    /// Positions are equal when pieces, side to move, castling rights and en passant match.
+    pub fn repetition_count(&self) -> usize {
+        let current = self.current_position();
+        self.positions[..=self.cursor]
+            .iter()
+            .filter(|p| same_position(p, current))
+            .count()
+    }
+
+    pub fn outcome(&self) -> Option<Outcome> {
         let position = self.current_position();
 
         if position.is_checkmate() {
-            let winner = position.turn().other();
-            return Some(format!("{} wins by checkmate", winner));
+            return Some(Outcome::Checkmate {
+                winner: position.turn().other(),
+            });
         }
-
         if position.is_stalemate() {
-            return Some("Draw by stalemate".to_string());
+            return Some(Outcome::Stalemate);
         }
-
         if position.is_insufficient_material() {
-            return Some("Draw by insufficient material".to_string());
+            return Some(Outcome::InsufficientMaterial);
         }
-
+        if position.halfmoves() >= 100 {
+            return Some(Outcome::FiftyMoveRule);
+        }
+        if self.repetition_count() >= 3 {
+            return Some(Outcome::ThreefoldRepetition);
+        }
         None
+    }
+
+    pub fn outcome_string(&self) -> Option<String> {
+        self.outcome().map(|o| o.to_string())
     }
 
     /// Try to make a move from UCI string (e.g. "e2e4") in the current position.
@@ -328,10 +429,23 @@ impl Game {
             out.push_str(&format!("[{} \"{}\"]\n", key, val));
         }
 
-        for (k, v) in &self.headers {
-            if !header_order.contains(&k.as_str()) {
-                out.push_str(&format!("[{} \"{}\"]\n", k, v));
-            }
+        // FEN/SetUp are regenerated below from the real start position.
+        let mut extra: Vec<(&String, &String)> = self
+            .headers
+            .iter()
+            .filter(|(k, _)| {
+                !header_order.contains(&k.as_str()) && k.as_str() != "FEN" && k.as_str() != "SetUp"
+            })
+            .collect();
+        extra.sort();
+        for (k, v) in extra {
+            out.push_str(&format!("[{} \"{}\"]\n", k, v));
+        }
+
+        if self.positions[0] != Chess::default() {
+            let fen = Fen::from_position(&self.positions[0], EnPassantMode::Legal);
+            out.push_str("[SetUp \"1\"]\n");
+            out.push_str(&format!("[FEN \"{}\"]\n", fen));
         }
 
         out.push('\n');
@@ -405,12 +519,35 @@ fn default_headers() -> HashMap<String, String> {
     let mut h = HashMap::new();
     h.insert("Event".to_string(), "?".to_string());
     h.insert("Site".to_string(), "?".to_string());
-    h.insert("Date".to_string(), "????.??.??".to_string());
+    h.insert("Date".to_string(), today_pgn_date());
     h.insert("Round".to_string(), "?".to_string());
     h.insert("White".to_string(), "?".to_string());
     h.insert("Black".to_string(), "?".to_string());
     h.insert("Result".to_string(), "*".to_string());
     h
+}
+
+fn today_pgn_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
+    format!("{y:04}.{m:02}.{d:02}")
+}
+
+/// Convert days since 1970-01-01 to a (year, month, day) Gregorian date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -515,11 +652,11 @@ mod tests {
         // Fool's mate: 1. f3 e5 2. g4 Qh4#
         let g = game_from_uci(&["f2f3", "e7e5", "g2g4", "d8h4"]);
         assert!(g.is_game_over());
-        // shakmaty's Color renders lowercase.
         assert_eq!(
             g.outcome_string(),
-            Some("black wins by checkmate".to_string())
+            Some("Black wins by checkmate".to_string())
         );
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("0-1"));
     }
 
     #[test]
@@ -564,6 +701,187 @@ mod tests {
         g.make_uci_move("c7c5").expect("legal");
         let pgn = g.to_pgn();
         assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+
+    #[test]
+    fn take_back_removes_moves_from_the_end() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.go_to(1);
+        g.take_back(2);
+        assert_eq!(g.san, vec!["e4", "e5"]);
+        assert_eq!(g.positions.len(), 3);
+        assert_eq!(g.cursor, 2);
+        assert!(g.at_end());
+
+        g.take_back(5);
+        assert!(g.moves.is_empty());
+        assert_eq!(g.positions.len(), 1);
+        assert_eq!(g.cursor, 0);
+        assert_eq!(g.current_fen(), START_FEN);
+    }
+
+    #[test]
+    fn truncate_to_cursor_makes_shown_position_the_end() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.go_to(1);
+        g.truncate_to_cursor();
+        assert_eq!(g.san, vec!["e4"]);
+        assert_eq!(g.cursor, 1);
+        assert!(g.at_end());
+
+        g.truncate_to_cursor();
+        assert_eq!(g.san, vec!["e4"]);
+    }
+
+    #[test]
+    fn take_back_drops_side_lines_too() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3"]);
+        g.go_to(1);
+        g.make_uci_move("c7c5").expect("legal");
+        assert!(g.has_variations());
+        g.take_back(1);
+        assert_eq!(g.san, vec!["e4"]);
+        assert!(!g.has_variations());
+    }
+
+    const SHUFFLE: [&str; 4] = ["g1f3", "g8f6", "f3g1", "f6g8"];
+
+    #[test]
+    fn threefold_repetition_is_a_draw_but_not_terminal() {
+        let mut g = Game::new();
+        for m in SHUFFLE {
+            g.make_uci_move(m).expect("legal");
+        }
+        assert_eq!(g.repetition_count(), 2);
+        assert_eq!(g.outcome(), None);
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("*"));
+
+        for m in SHUFFLE {
+            g.make_uci_move(m).expect("legal");
+        }
+        assert_eq!(g.repetition_count(), 3);
+        assert_eq!(g.outcome(), Some(Outcome::ThreefoldRepetition));
+        assert_eq!(
+            g.outcome_string(),
+            Some("Draw by threefold repetition".to_string())
+        );
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("1/2-1/2"));
+        assert!(!g.is_game_over());
+    }
+
+    #[test]
+    fn repetition_only_counts_positions_up_to_the_cursor() {
+        let mut g = Game::new();
+        for m in SHUFFLE.iter().chain(SHUFFLE.iter()) {
+            g.make_uci_move(m).expect("legal");
+        }
+        g.go_to(4);
+        assert_eq!(g.repetition_count(), 2);
+        assert_eq!(g.outcome(), None);
+    }
+
+    #[test]
+    fn repetition_requires_same_castling_rights() {
+        let fen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+        let mut g = Game::from_fen(fen).expect("valid fen");
+        for m in ["e1e2", "e8e7", "e2e1", "e7e8"] {
+            g.make_uci_move(m).expect("legal");
+        }
+        assert_eq!(g.repetition_count(), 1);
+        for m in ["e1e2", "e8e7", "e2e1", "e7e8"] {
+            g.make_uci_move(m).expect("legal");
+        }
+        assert_eq!(g.repetition_count(), 2);
+        assert_eq!(g.outcome(), None);
+    }
+
+    #[test]
+    fn fifty_move_rule_is_a_draw() {
+        let mut g = Game::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 99 80").expect("valid fen");
+        assert_eq!(g.outcome(), None);
+        g.make_uci_move("a1a2").expect("legal");
+        assert_eq!(g.outcome(), Some(Outcome::FiftyMoveRule));
+        assert!(!g.is_game_over());
+    }
+
+    #[test]
+    fn checkmate_takes_priority_over_fifty_move_rule() {
+        let mut g = Game::from_fen("7k/8/6K1/8/8/8/8/R7 w - - 99 80").expect("valid fen");
+        g.make_uci_move("a1a8").expect("legal");
+        assert_eq!(
+            g.outcome(),
+            Some(Outcome::Checkmate {
+                winner: Color::White
+            })
+        );
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("1-0"));
+    }
+
+    #[test]
+    fn result_resets_when_a_finished_line_is_replaced() {
+        let mut g = game_from_uci(&["f2f3", "e7e5", "g2g4", "d8h4"]);
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("0-1"));
+        g.go_back();
+        g.make_uci_move("d7d6").expect("legal");
+        assert_eq!(g.headers.get("Result").map(String::as_str), Some("*"));
+    }
+
+    #[test]
+    fn start_fen_does_not_change_as_moves_are_played() {
+        let mut g = Game::new();
+        assert_eq!(g.start_fen(), START_FEN);
+        g.make_uci_move("e2e4").expect("legal");
+        g.make_uci_move("e7e5").expect("legal");
+        assert_eq!(g.start_fen(), START_FEN);
+        assert_ne!(g.current_fen(), START_FEN);
+
+        let fen = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
+        let custom = Game::from_fen(fen).expect("valid fen");
+        assert_eq!(custom.start_fen(), fen);
+    }
+
+    #[test]
+    fn to_pgn_writes_each_move_exactly_once() {
+        let mut g = game_from_uci(&["e2e4", "e7e5", "g1f3", "b8c6"]);
+        g.headers.insert("Result".to_string(), "*".to_string());
+        let pgn = g.to_pgn();
+        let movetext = pgn.rsplit("\n\n").next().unwrap().trim();
+        assert_eq!(movetext, "1. e4 e5 2. Nf3 Nc6 *");
+    }
+
+    #[test]
+    fn to_pgn_black_first_numbers_from_start_position() {
+        let fen = "4k3/8/8/8/8/8/8/4K2R b K - 0 12";
+        let mut g = Game::from_fen(fen).expect("valid fen");
+        g.make_uci_move("e8d8").expect("legal");
+        g.make_uci_move("e1g1").expect("legal");
+        g.make_uci_move("d8c8").expect("legal");
+        let pgn = g.to_pgn();
+        let movetext = pgn.rsplit("\n\n").next().unwrap().trim();
+        assert_eq!(movetext, "12... Kd8 13. O-O Kc8 *");
+        assert!(pgn.contains("[SetUp \"1\"]"));
+        assert!(pgn.contains(&format!("[FEN \"{fen}\"]")));
+    }
+
+    #[test]
+    fn to_pgn_standard_start_has_no_fen_tag() {
+        let g = game_from_uci(&["e2e4"]);
+        assert!(!g.to_pgn().contains("[FEN"));
+    }
+
+    #[test]
+    fn new_game_has_real_date_header() {
+        let g = Game::new();
+        let date = g.headers.get("Date").expect("date header");
+        assert_eq!(date.len(), 10);
+        assert!(!date.contains('?'), "date was {date}");
+    }
+
+    #[test]
+    fn civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+        assert_eq!(civil_from_days(20_454), (2026, 1, 1));
     }
 
     fn movetext(g: &Game) -> String {
