@@ -44,6 +44,8 @@ const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
 
 const HINT_MOVETIME_MS: u64 = 1500;
 
+const BOARD_MARGIN: f32 = 14.0;
+
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
     ("Casual", 1200),
@@ -1701,7 +1703,8 @@ impl eframe::App for ChessyApp {
 
                 let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
-                let board_size = available.width().min(available.height());
+                let board_size =
+                    (available.width().min(available.height()) - 2.0 * BOARD_MARGIN).max(80.0);
                 let board_rect =
                     egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
 
