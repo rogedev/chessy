@@ -1019,109 +1019,137 @@ impl ChessyApp {
         let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
+        let palette = Palette::new(self.settings.dark_theme);
 
         egui::Window::new("Settings")
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Engine path:");
-                    ui.text_edit_singleline(&mut engine_path);
-                    if ui.button("Browse…").clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_file()
-                    {
-                        engine_path = path.to_string_lossy().to_string();
-                    }
-                });
-
-                ui.separator();
-
-                ui.checkbox(&mut limit_strength, "Limit strength");
-
-                ui.horizontal(|ui| {
-                    ui.label("Preset:");
-
-                    for &(label, elo) in SKILL_PRESETS {
-                        let selected = limit_strength && engine_elo == elo;
-
-                        if ui.selectable_label(selected, label).clicked() {
-                            engine_elo = elo;
-                            limit_strength = true;
-                            apply = true;
-                        }
-                    }
-                });
-
-                if limit_strength {
-                    ui.horizontal(|ui| {
-                        ui.label("ELO:");
-                        ui.add(egui::Slider::new(&mut engine_elo, 800..=3200));
+                settings_section(ui, "Engine", &palette);
+                egui::Grid::new("settings_engine")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Path");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut engine_path).desired_width(240.0),
+                            );
+                            if ui.button("Browse…").clicked()
+                                && let Some(path) = rfd::FileDialog::new().pick_file()
+                            {
+                                engine_path = path.to_string_lossy().to_string();
+                            }
+                        });
+                        ui.end_row();
                     });
-                }
 
-                ui.horizontal(|ui| {
-                    ui.label("Analysis depth:");
-                    ui.add(egui::Slider::new(&mut analysis_depth, 10..=30));
-                });
+                settings_section(ui, "Strength", &palette);
+                egui::Grid::new("settings_strength")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Limit strength");
+                        ui.checkbox(&mut limit_strength, "");
+                        ui.end_row();
 
-                ui.horizontal(|ui| {
-                    ui.label("Move time (ms):");
-                    ui.add(egui::Slider::new(&mut movetime_ms, 500..=10000));
-                });
+                        ui.label("Preset");
+                        ui.horizontal(|ui| {
+                            for &(label, elo) in SKILL_PRESETS {
+                                let selected = limit_strength && engine_elo == elo;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    engine_elo = elo;
+                                    limit_strength = true;
+                                    apply = true;
+                                }
+                            }
+                        });
+                        ui.end_row();
 
-                ui.horizontal(|ui| {
-                    ui.label("Multi-PV lines:");
-                    ui.add(egui::Slider::new(&mut multipv, 1..=4));
-                });
+                        if limit_strength {
+                            ui.label("ELO");
+                            ui.add(egui::Slider::new(&mut engine_elo, 800..=3200));
+                            ui.end_row();
+                        }
+                    });
 
-                ui.separator();
+                settings_section(ui, "Analysis", &palette);
+                egui::Grid::new("settings_analysis")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Depth");
+                        ui.add(egui::Slider::new(&mut analysis_depth, 10..=30));
+                        ui.end_row();
 
-                ui.label("Piece style:");
-                if piece_sets.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No piece sets found in assets/pieces/")
-                            .color(Color32::GRAY)
-                            .italics(),
-                    );
-                } else {
-                    ui.horizontal(|ui| {
-                        for set in &piece_sets {
+                        ui.label("Move time (ms)");
+                        ui.add(egui::Slider::new(&mut movetime_ms, 500..=10000));
+                        ui.end_row();
+
+                        ui.label("Lines (Multi-PV)");
+                        ui.add(egui::Slider::new(&mut multipv, 1..=4));
+                        ui.end_row();
+                    });
+
+                settings_section(ui, "Appearance", &palette);
+                egui::Grid::new("settings_appearance")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Pieces");
+                        if piece_sets.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No piece sets found in assets/pieces/")
+                                    .color(palette.text_weak)
+                                    .italics(),
+                            );
+                        } else {
+                            ui.horizontal(|ui| {
+                                for set in &piece_sets {
+                                    if ui
+                                        .selectable_label(piece_set == *set, set.as_str())
+                                        .clicked()
+                                    {
+                                        piece_set = set.clone();
+                                    }
+                                }
+                            });
+                        }
+                        ui.end_row();
+
+                        ui.label("Board");
+                        ui.horizontal_wrapped(|ui| {
                             if ui
-                                .selectable_label(piece_set == *set, set.as_str())
+                                .selectable_label(board_theme.is_empty(), "Auto")
+                                .on_hover_text(
+                                    "Green with the dark interface, brown with the light one",
+                                )
                                 .clicked()
                             {
-                                piece_set = set.clone();
+                                board_theme.clear();
                             }
-                        }
+                            for theme in BOARD_THEMES {
+                                let selected = board_theme.eq_ignore_ascii_case(theme.name);
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(20.0, 10.0),
+                                    egui::Sense::hover(),
+                                );
+                                let (left, right) = rect.split_left_right_at_fraction(0.5);
+                                ui.painter().rect_filled(left, 0.0, theme.light);
+                                ui.painter().rect_filled(right, 0.0, theme.dark);
+                                if ui.selectable_label(selected, theme.name).clicked() {
+                                    board_theme = theme.name.to_string();
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Coordinates");
+                        ui.checkbox(&mut show_coordinates, "Show");
+                        ui.end_row();
                     });
-                }
 
-                ui.add_space(4.0);
-                ui.label("Board colours:");
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(board_theme.is_empty(), "Auto")
-                        .on_hover_text("Green with the dark interface, brown with the light one")
-                        .clicked()
-                    {
-                        board_theme.clear();
-                    }
-                    for theme in BOARD_THEMES {
-                        let selected = board_theme.eq_ignore_ascii_case(theme.name);
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
-                        let (left, right) = rect.split_left_right_at_fraction(0.5);
-                        ui.painter().rect_filled(left, 0.0, theme.light);
-                        ui.painter().rect_filled(right, 0.0, theme.dark);
-                        if ui.selectable_label(selected, theme.name).clicked() {
-                            board_theme = theme.name.to_string();
-                        }
-                    }
-                });
-                ui.checkbox(&mut show_coordinates, "Show coordinates");
-
-                ui.separator();
-
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Apply & Reconnect").clicked() {
                         apply = true;
@@ -1164,6 +1192,8 @@ impl ChessyApp {
                 ui.vertical_centered(|ui| {
                     ui.heading("Chessy");
                     ui.label("A chess GUI built with Rust + egui + Stockfish");
+                    ui.add_space(12.0);
+                    ui.separator();
                     ui.add_space(8.0);
                     ui.label("← / → — navigate moves");
                     ui.label("F — flip board");
@@ -1780,6 +1810,12 @@ impl eframe::App for ChessyApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
+}
+
+fn settings_section(ui: &mut Ui, title: &str, palette: &Palette) {
+    ui.add_space(10.0);
+    ui.label(RichText::new(title).strong().color(palette.accent));
+    ui.add_space(2.0);
 }
 
 fn show_clock(ui: &mut Ui, clock: Option<&Clock>, color: PieceColor, text_col: Color32) {
