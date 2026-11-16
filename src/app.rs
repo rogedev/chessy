@@ -28,6 +28,7 @@ use crate::{
         graph::show_eval_graph,
         moves::show_moves_panel,
         picker::show_game_picker,
+        theme::{self, Palette},
     },
 };
 
@@ -104,6 +105,7 @@ pub struct ChessyApp {
     hint: Option<(Square, Square, String)>,
     resigned: Option<PieceColor>,
     resign_armed: bool,
+    applied_theme: Option<bool>,
     pgn_games: Vec<Game>,
     pgn_current: Option<usize>,
     pgn_filter: String,
@@ -148,6 +150,7 @@ impl ChessyApp {
             hint: None,
             resigned: None,
             resign_armed: false,
+            applied_theme: None,
             pgn_games: vec![],
             pgn_current: None,
             pgn_filter: String::new(),
@@ -907,7 +910,6 @@ impl ChessyApp {
                 {
                     self.settings.dark_theme = true;
                     self.settings.save();
-                    apply_theme(ui.ctx(), true);
                     ui.close();
                 }
                 if ui
@@ -916,7 +918,6 @@ impl ChessyApp {
                 {
                     self.settings.dark_theme = false;
                     self.settings.save();
-                    apply_theme(ui.ctx(), false);
                     ui.close();
                 }
             });
@@ -1487,13 +1488,11 @@ impl eframe::App for ChessyApp {
             }
         }
 
-        apply_theme(&ctx, self.settings.dark_theme);
-
-        let bg_color = if self.settings.dark_theme {
-            Color32::from_rgb(30, 30, 30)
-        } else {
-            Color32::from_rgb(240, 240, 240)
-        };
+        if self.applied_theme != Some(self.settings.dark_theme) {
+            theme::apply(&ctx, self.settings.dark_theme);
+            self.applied_theme = Some(self.settings.dark_theme);
+        }
+        let palette = Palette::new(self.settings.dark_theme);
 
         // Settings, about, and promotion dialog windows
         if self.show_settings {
@@ -1522,20 +1521,15 @@ impl eframe::App for ChessyApp {
             self.show_menu_bar(ui);
         });
 
+        let panel_frame = egui::Frame::new()
+            .fill(palette.panel)
+            .inner_margin(egui::Margin::same(12));
         egui::Panel::right("right_panel")
-            .default_size(260.0)
-            .min_size(200.0)
+            .default_size(288.0)
+            .min_size(220.0)
             .resizable(false)
+            .frame(panel_frame)
             .show_inside(ui, |ui| {
-                let panel_bg = if self.settings.dark_theme {
-                    Color32::from_rgb(38, 38, 38)
-                } else {
-                    Color32::from_rgb(248, 248, 248)
-                };
-                ui.painter().rect_filled(ui.max_rect(), 0.0, panel_bg);
-
-                ui.add_space(4.0);
-
                 if self.mode == AppMode::Setup {
                     self.show_setup_panel(ui);
                     return;
@@ -1554,11 +1548,7 @@ impl eframe::App for ChessyApp {
                     .get("Black")
                     .map(|s| s.as_str())
                     .unwrap_or("?");
-                let text_col = if self.settings.dark_theme {
-                    Color32::from_rgb(220, 220, 220)
-                } else {
-                    Color32::from_rgb(30, 30, 30)
-                };
+                let text_col = palette.text;
 
                 let clock = self.clock.clone();
                 let start_board = self.game.start_position().board();
@@ -1576,6 +1566,7 @@ impl eframe::App for ChessyApp {
                         PieceColor::White,
                         &white_lost,
                         -balance,
+                        &palette,
                     );
                     show_clock(ui, clock.as_ref(), PieceColor::Black, text_col);
                 });
@@ -1588,6 +1579,7 @@ impl eframe::App for ChessyApp {
                         PieceColor::Black,
                         &black_lost,
                         balance,
+                        &palette,
                     );
                     show_clock(ui, clock.as_ref(), PieceColor::White, text_col);
                 });
@@ -1674,7 +1666,7 @@ impl eframe::App for ChessyApp {
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(bg_color))
+            .frame(egui::Frame::new().fill(palette.background))
             .show_inside(ui, |ui| {
                 // Status message (not shown while editing a position)
                 let outcome = match (self.resigned, self.flagged()) {
@@ -1847,14 +1839,6 @@ fn infer_castling(board: &Board) -> Bitboard {
     }
 
     rights
-}
-
-fn apply_theme(ctx: &Context, dark: bool) {
-    if dark {
-        ctx.set_visuals(egui::Visuals::dark());
-    } else {
-        ctx.set_visuals(egui::Visuals::light());
-    }
 }
 
 #[cfg(test)]
