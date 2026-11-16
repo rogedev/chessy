@@ -177,6 +177,14 @@ impl Game {
         Ok(())
     }
 
+    pub fn uci_moves(&self, plies: usize) -> Vec<String> {
+        self.moves[..plies.min(self.moves.len())]
+            .iter()
+            .zip(&self.positions)
+            .map(|(m, pos)| m.to_uci(pos.castles().mode()).to_string())
+            .collect()
+    }
+
     // ---- game tree ---------------------------------------------------
 
     fn children_of(&self, parent: Option<usize>) -> &[usize] {
@@ -352,13 +360,8 @@ impl Game {
         self.truncate_to(self.cursor);
     }
 
-    /// Returns UCI move strings for positions[0..cursor].
     pub fn uci_moves_to_cursor(&self) -> Vec<String> {
-        self.moves[..self.cursor]
-            .iter()
-            .zip(&self.positions)
-            .map(|(m, pos)| m.to_uci(pos.castles().mode()).to_string())
-            .collect()
+        self.uci_moves(self.cursor)
     }
 
     pub fn start_fen(&self) -> String {
@@ -701,6 +704,14 @@ mod tests {
         g.make_uci_move("c7c5").expect("legal");
         let pgn = g.to_pgn();
         assert!(pgn.contains("1... c5"), "pgn was: {pgn}");
+    }
+
+    #[test]
+    fn uci_moves_returns_a_prefix_of_the_game() {
+        let g = game_from_uci(&["e2e4", "e7e5", "g1f3"]);
+        assert!(g.uci_moves(0).is_empty());
+        assert_eq!(g.uci_moves(2), vec!["e2e4", "e7e5"]);
+        assert_eq!(g.uci_moves(99), vec!["e2e4", "e7e5", "g1f3"]);
     }
 
     #[test]
