@@ -28,6 +28,7 @@ use crate::{
         graph::show_eval_graph,
         moves::show_moves_panel,
         picker::show_game_picker,
+        theme::{self, Palette},
     },
 };
 
@@ -43,6 +44,10 @@ const SHORTCUT_COPY_PGN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
 );
 
 const HINT_MOVETIME_MS: u64 = 1500;
+
+const BOARD_MARGIN: f32 = 14.0;
+const EVAL_BAR_WIDTH: f32 = 30.0;
+const EVAL_BAR_GAP: f32 = 10.0;
 
 const SKILL_PRESETS: &[(&str, u32)] = &[
     ("Beginner", 800),
@@ -102,6 +107,7 @@ pub struct ChessyApp {
     hint: Option<(Square, Square, String)>,
     resigned: Option<PieceColor>,
     resign_armed: bool,
+    applied_theme: Option<bool>,
     pgn_games: Vec<Game>,
     pgn_current: Option<usize>,
     pgn_filter: String,
@@ -113,7 +119,7 @@ impl ChessyApp {
         let settings = Settings::load();
 
         let engine = UciClient::new(Path::new(&settings.engine_path)).ok();
-        let piece_textures = PieceTextures::load(&_cc.egui_ctx, &settings.piece_set);
+        let piece_textures = PieceTextures::load(&settings.piece_set);
 
         let mut app = Self {
             game: Game::new(),
@@ -146,6 +152,7 @@ impl ChessyApp {
             hint: None,
             resigned: None,
             resign_armed: false,
+            applied_theme: None,
             pgn_games: vec![],
             pgn_current: None,
             pgn_filter: String::new(),
@@ -905,7 +912,6 @@ impl ChessyApp {
                 {
                     self.settings.dark_theme = true;
                     self.settings.save();
-                    apply_theme(ui.ctx(), true);
                     ui.close();
                 }
                 if ui
@@ -914,7 +920,6 @@ impl ChessyApp {
                 {
                     self.settings.dark_theme = false;
                     self.settings.save();
-                    apply_theme(ui.ctx(), false);
                     ui.close();
                 }
             });
@@ -1014,109 +1019,137 @@ impl ChessyApp {
         let piece_sets = available_piece_sets();
         let mut close = false;
         let mut apply = false;
+        let palette = Palette::new(self.settings.dark_theme);
 
         egui::Window::new("Settings")
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Engine path:");
-                    ui.text_edit_singleline(&mut engine_path);
-                    if ui.button("Browse…").clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_file()
-                    {
-                        engine_path = path.to_string_lossy().to_string();
-                    }
-                });
-
-                ui.separator();
-
-                ui.checkbox(&mut limit_strength, "Limit strength");
-
-                ui.horizontal(|ui| {
-                    ui.label("Preset:");
-
-                    for &(label, elo) in SKILL_PRESETS {
-                        let selected = limit_strength && engine_elo == elo;
-
-                        if ui.selectable_label(selected, label).clicked() {
-                            engine_elo = elo;
-                            limit_strength = true;
-                            apply = true;
-                        }
-                    }
-                });
-
-                if limit_strength {
-                    ui.horizontal(|ui| {
-                        ui.label("ELO:");
-                        ui.add(egui::Slider::new(&mut engine_elo, 800..=3200));
+                settings_section(ui, "Engine", &palette);
+                egui::Grid::new("settings_engine")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Path");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut engine_path).desired_width(240.0),
+                            );
+                            if ui.button("Browse…").clicked()
+                                && let Some(path) = rfd::FileDialog::new().pick_file()
+                            {
+                                engine_path = path.to_string_lossy().to_string();
+                            }
+                        });
+                        ui.end_row();
                     });
-                }
 
-                ui.horizontal(|ui| {
-                    ui.label("Analysis depth:");
-                    ui.add(egui::Slider::new(&mut analysis_depth, 10..=30));
-                });
+                settings_section(ui, "Strength", &palette);
+                egui::Grid::new("settings_strength")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Limit strength");
+                        ui.checkbox(&mut limit_strength, "");
+                        ui.end_row();
 
-                ui.horizontal(|ui| {
-                    ui.label("Move time (ms):");
-                    ui.add(egui::Slider::new(&mut movetime_ms, 500..=10000));
-                });
+                        ui.label("Preset");
+                        ui.horizontal(|ui| {
+                            for &(label, elo) in SKILL_PRESETS {
+                                let selected = limit_strength && engine_elo == elo;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    engine_elo = elo;
+                                    limit_strength = true;
+                                    apply = true;
+                                }
+                            }
+                        });
+                        ui.end_row();
 
-                ui.horizontal(|ui| {
-                    ui.label("Multi-PV lines:");
-                    ui.add(egui::Slider::new(&mut multipv, 1..=4));
-                });
+                        if limit_strength {
+                            ui.label("ELO");
+                            ui.add(egui::Slider::new(&mut engine_elo, 800..=3200));
+                            ui.end_row();
+                        }
+                    });
 
-                ui.separator();
+                settings_section(ui, "Analysis", &palette);
+                egui::Grid::new("settings_analysis")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Depth");
+                        ui.add(egui::Slider::new(&mut analysis_depth, 10..=30));
+                        ui.end_row();
 
-                ui.label("Piece style:");
-                if piece_sets.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No piece sets found in assets/pieces/")
-                            .color(Color32::GRAY)
-                            .italics(),
-                    );
-                } else {
-                    ui.horizontal(|ui| {
-                        for set in &piece_sets {
+                        ui.label("Move time (ms)");
+                        ui.add(egui::Slider::new(&mut movetime_ms, 500..=10000));
+                        ui.end_row();
+
+                        ui.label("Lines (Multi-PV)");
+                        ui.add(egui::Slider::new(&mut multipv, 1..=4));
+                        ui.end_row();
+                    });
+
+                settings_section(ui, "Appearance", &palette);
+                egui::Grid::new("settings_appearance")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Pieces");
+                        if piece_sets.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No piece sets found in assets/pieces/")
+                                    .color(palette.text_weak)
+                                    .italics(),
+                            );
+                        } else {
+                            ui.horizontal(|ui| {
+                                for set in &piece_sets {
+                                    if ui
+                                        .selectable_label(piece_set == *set, set.as_str())
+                                        .clicked()
+                                    {
+                                        piece_set = set.clone();
+                                    }
+                                }
+                            });
+                        }
+                        ui.end_row();
+
+                        ui.label("Board");
+                        ui.horizontal_wrapped(|ui| {
                             if ui
-                                .selectable_label(piece_set == *set, set.as_str())
+                                .selectable_label(board_theme.is_empty(), "Auto")
+                                .on_hover_text(
+                                    "Green with the dark interface, brown with the light one",
+                                )
                                 .clicked()
                             {
-                                piece_set = set.clone();
+                                board_theme.clear();
                             }
-                        }
+                            for theme in BOARD_THEMES {
+                                let selected = board_theme.eq_ignore_ascii_case(theme.name);
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(20.0, 10.0),
+                                    egui::Sense::hover(),
+                                );
+                                let (left, right) = rect.split_left_right_at_fraction(0.5);
+                                ui.painter().rect_filled(left, 0.0, theme.light);
+                                ui.painter().rect_filled(right, 0.0, theme.dark);
+                                if ui.selectable_label(selected, theme.name).clicked() {
+                                    board_theme = theme.name.to_string();
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Coordinates");
+                        ui.checkbox(&mut show_coordinates, "Show");
+                        ui.end_row();
                     });
-                }
 
-                ui.add_space(4.0);
-                ui.label("Board colours:");
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(board_theme.is_empty(), "Auto")
-                        .on_hover_text("Green with the dark interface, brown with the light one")
-                        .clicked()
-                    {
-                        board_theme.clear();
-                    }
-                    for theme in BOARD_THEMES {
-                        let selected = board_theme.eq_ignore_ascii_case(theme.name);
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(20.0, 10.0), egui::Sense::hover());
-                        let (left, right) = rect.split_left_right_at_fraction(0.5);
-                        ui.painter().rect_filled(left, 0.0, theme.light);
-                        ui.painter().rect_filled(right, 0.0, theme.dark);
-                        if ui.selectable_label(selected, theme.name).clicked() {
-                            board_theme = theme.name.to_string();
-                        }
-                    }
-                });
-                ui.checkbox(&mut show_coordinates, "Show coordinates");
-
-                ui.separator();
-
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Apply & Reconnect").clicked() {
                         apply = true;
@@ -1145,7 +1178,7 @@ impl ChessyApp {
             self.settings.save();
             self.reconnect_engine();
             self.start_analysis();
-            self.piece_textures = PieceTextures::load(ctx, &self.settings.piece_set);
+            self.piece_textures = PieceTextures::load(&self.settings.piece_set);
         }
     }
 
@@ -1159,6 +1192,8 @@ impl ChessyApp {
                 ui.vertical_centered(|ui| {
                     ui.heading("Chessy");
                     ui.label("A chess GUI built with Rust + egui + Stockfish");
+                    ui.add_space(12.0);
+                    ui.separator();
                     ui.add_space(8.0);
                     ui.label("← / → — navigate moves");
                     ui.label("F — flip board");
@@ -1334,7 +1369,8 @@ impl ChessyApp {
                 for role in roles {
                     let piece = Piece { color, role };
                     let selected = self.setup_palette == Some(piece);
-                    if let Some(tex) = self.piece_textures.get(piece) {
+                    let size_px = 30.0 * ui.ctx().pixels_per_point();
+                    if let Some(tex) = self.piece_textures.get(ui.ctx(), piece, size_px) {
                         let img = egui::Image::from_texture(egui::load::SizedTexture::new(
                             tex.id(),
                             egui::vec2(30.0, 30.0),
@@ -1412,7 +1448,9 @@ impl ChessyApp {
                             Role::Knight => "Knight",
                             _ => unreachable!(),
                         };
-                        let clicked = match self.piece_textures.get(Piece { color, role }) {
+                        let piece = Piece { color, role };
+                        let size_px = 56.0 * ui.ctx().pixels_per_point();
+                        let clicked = match self.piece_textures.get(ui.ctx(), piece, size_px) {
                             Some(tex) => {
                                 let img = egui::Image::from_texture(egui::load::SizedTexture::new(
                                     tex.id(),
@@ -1482,13 +1520,11 @@ impl eframe::App for ChessyApp {
             }
         }
 
-        apply_theme(&ctx, self.settings.dark_theme);
-
-        let bg_color = if self.settings.dark_theme {
-            Color32::from_rgb(30, 30, 30)
-        } else {
-            Color32::from_rgb(240, 240, 240)
-        };
+        if self.applied_theme != Some(self.settings.dark_theme) {
+            theme::apply(&ctx, self.settings.dark_theme);
+            self.applied_theme = Some(self.settings.dark_theme);
+        }
+        let palette = Palette::new(self.settings.dark_theme);
 
         // Settings, about, and promotion dialog windows
         if self.show_settings {
@@ -1517,20 +1553,15 @@ impl eframe::App for ChessyApp {
             self.show_menu_bar(ui);
         });
 
+        let panel_frame = egui::Frame::new()
+            .fill(palette.panel)
+            .inner_margin(egui::Margin::same(12));
         egui::Panel::right("right_panel")
-            .default_size(260.0)
-            .min_size(200.0)
+            .default_size(288.0)
+            .min_size(220.0)
             .resizable(false)
+            .frame(panel_frame)
             .show_inside(ui, |ui| {
-                let panel_bg = if self.settings.dark_theme {
-                    Color32::from_rgb(38, 38, 38)
-                } else {
-                    Color32::from_rgb(248, 248, 248)
-                };
-                ui.painter().rect_filled(ui.max_rect(), 0.0, panel_bg);
-
-                ui.add_space(4.0);
-
                 if self.mode == AppMode::Setup {
                     self.show_setup_panel(ui);
                     return;
@@ -1549,11 +1580,7 @@ impl eframe::App for ChessyApp {
                     .get("Black")
                     .map(|s| s.as_str())
                     .unwrap_or("?");
-                let text_col = if self.settings.dark_theme {
-                    Color32::from_rgb(220, 220, 220)
-                } else {
-                    Color32::from_rgb(30, 30, 30)
-                };
+                let text_col = palette.text;
 
                 let clock = self.clock.clone();
                 let start_board = self.game.start_position().board();
@@ -1562,41 +1589,50 @@ impl eframe::App for ChessyApp {
                 let black_lost = captured_pieces(start_board, board, PieceColor::Black);
                 let balance = material_balance(board);
 
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("♟ ").color(Color32::from_rgb(50, 50, 50)));
-                    ui.label(RichText::new(black).color(text_col).strong());
-                    show_captured(
-                        ui,
-                        &self.piece_textures,
-                        PieceColor::White,
-                        &white_lost,
-                        -balance,
-                    );
-                    show_clock(ui, clock.as_ref(), PieceColor::Black, text_col);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("♙ ").color(Color32::WHITE));
-                    ui.label(RichText::new(white).color(text_col).strong());
-                    show_captured(
-                        ui,
-                        &self.piece_textures,
-                        PieceColor::Black,
-                        &black_lost,
-                        balance,
-                    );
-                    show_clock(ui, clock.as_ref(), PieceColor::White, text_col);
-                });
+                for (name, side, lost, advantage) in [
+                    (black, PieceColor::Black, &white_lost, -balance),
+                    (white, PieceColor::White, &black_lost, balance),
+                ] {
+                    ui.horizontal(|ui| {
+                        let (dot, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
+                        let fill = if side == PieceColor::White {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_gray(25)
+                        };
+                        ui.painter().circle(
+                            dot.center(),
+                            5.5,
+                            fill,
+                            egui::Stroke::new(1.0_f32, palette.text_weak),
+                        );
+                        ui.label(RichText::new(name).color(text_col).strong().size(15.0));
+                        show_clock(ui, clock.as_ref(), side, text_col);
+                    });
+                    if lost.is_empty() && advantage <= 0 {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        show_captured(ui, &self.piece_textures, !side, lost, advantage, &palette);
+                    });
+                }
 
                 if let Some(opening) = OpeningBook::builtin().lookup(&self.game) {
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(&opening.eco)
                                 .small()
                                 .strong()
-                                .color(Color32::from_rgb(220, 180, 50)),
+                                .color(palette.accent),
                         );
-                        ui.label(RichText::new(&opening.name).small().color(text_col));
+                        ui.label(
+                            RichText::new(&opening.name)
+                                .small()
+                                .color(palette.text_weak),
+                        );
                     })
                     .response
                     .on_hover_text("Opening");
@@ -1605,11 +1641,6 @@ impl eframe::App for ChessyApp {
                 ui.separator();
 
                 // Eval bar + analysis lines
-                let eval_ref = self.eval_score.as_ref();
-                let white_turn = self.game.current_position().turn() == PieceColor::White;
-                show_eval_bar(ui, eval_ref, white_turn);
-                ui.add_space(4.0);
-
                 if self.mode == AppMode::Analyze && !self.engine_lines.is_empty() {
                     let pos = self.game.current_position().clone();
                     show_analysis_panel(ui, &self.engine_lines, &pos, self.settings.dark_theme);
@@ -1657,19 +1688,14 @@ impl eframe::App for ChessyApp {
                 let available = ui.available_size();
                 ui.allocate_ui(available, |ui| {
                     let classes = self.current_review().map(Review::classes);
-                    if show_moves_panel(
-                        ui,
-                        &mut self.game,
-                        self.settings.dark_theme,
-                        classes.as_deref(),
-                    ) {
+                    if show_moves_panel(ui, &mut self.game, &palette, classes.as_deref()) {
                         self.play_nav_sound();
                     }
                 });
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(bg_color))
+            .frame(egui::Frame::new().fill(palette.background))
             .show_inside(ui, |ui| {
                 // Status message (not shown while editing a position)
                 let outcome = match (self.resigned, self.flagged()) {
@@ -1698,9 +1724,22 @@ impl eframe::App for ChessyApp {
 
                 let board_style = self.board_style();
                 let available = ui.available_rect_before_wrap();
-                let board_size = available.width().min(available.height());
-                let board_rect =
-                    egui::Rect::from_center_size(available.center(), egui::Vec2::splat(board_size));
+                let bar_space = if self.mode == AppMode::Setup {
+                    0.0
+                } else {
+                    EVAL_BAR_WIDTH + EVAL_BAR_GAP
+                };
+                let board_size =
+                    (available.width().min(available.height()) - 2.0 * BOARD_MARGIN - bar_space)
+                        .max(80.0);
+                let group_width = board_size + bar_space;
+                let board_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        available.center().x - group_width / 2.0 + bar_space,
+                        available.center().y - board_size / 2.0,
+                    ),
+                    egui::Vec2::splat(board_size),
+                );
 
                 if self.mode == AppMode::Setup {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(board_rect), |ui| {
@@ -1716,6 +1755,12 @@ impl eframe::App for ChessyApp {
 
                     return;
                 }
+
+                let bar_rect = egui::Rect::from_min_size(
+                    egui::pos2(board_rect.min.x - bar_space, board_rect.min.y),
+                    egui::vec2(EVAL_BAR_WIDTH, board_size),
+                );
+                show_eval_bar(ui, bar_rect, self.eval_score.as_ref(), self.flipped);
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,
@@ -1765,6 +1810,12 @@ impl eframe::App for ChessyApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
+}
+
+fn settings_section(ui: &mut Ui, title: &str, palette: &Palette) {
+    ui.add_space(10.0);
+    ui.label(RichText::new(title).strong().color(palette.accent));
+    ui.add_space(2.0);
 }
 
 fn show_clock(ui: &mut Ui, clock: Option<&Clock>, color: PieceColor, text_col: Color32) {
@@ -1841,14 +1892,6 @@ fn infer_castling(board: &Board) -> Bitboard {
     }
 
     rights
-}
-
-fn apply_theme(ctx: &Context, dark: bool) {
-    if dark {
-        ctx.set_visuals(egui::Visuals::dark());
-    } else {
-        ctx.set_visuals(egui::Visuals::light());
-    }
 }
 
 #[cfg(test)]
