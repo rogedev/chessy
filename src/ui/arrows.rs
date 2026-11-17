@@ -14,14 +14,15 @@ pub enum MarkColor {
 impl MarkColor {
     pub fn from_modifiers(m: &Modifiers) -> Self {
         if m.shift {
-            Self::Green
-        } else if m.command || m.ctrl {
-            Self::Blue
-        } else if m.alt {
-            Self::Yellow
-        } else {
-            Self::Red
+            return Self::Green;
         }
+        if m.command || m.ctrl {
+            return Self::Blue;
+        }
+        if m.alt {
+            return Self::Yellow;
+        }
+        Self::Red
     }
 
     pub fn color(self, alpha: u8) -> Color32 {
