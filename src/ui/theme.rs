@@ -4,6 +4,7 @@ use egui::{
 
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
+    pub dark: bool,
     pub background: Color32,
     pub panel: Color32,
     /// Behind small icons so white pieces stay readable on the light theme.
@@ -17,6 +18,7 @@ impl Palette {
     pub const fn new(dark: bool) -> Self {
         if dark {
             Self {
+                dark,
                 background: Color32::from_rgb(28, 28, 30),
                 panel: Color32::from_rgb(37, 37, 40),
                 chip: Color32::from_rgb(60, 60, 65),
@@ -26,6 +28,7 @@ impl Palette {
             }
         } else {
             Self {
+                dark,
                 background: Color32::from_rgb(236, 236, 238),
                 panel: Color32::from_rgb(248, 248, 249),
                 chip: Color32::from_rgb(208, 208, 214),
@@ -145,6 +148,25 @@ mod tests {
         let a = Color32::from_rgb(30, 100, 200);
         let b = Color32::from_rgb(240, 240, 240);
         assert_eq!(contrast_ratio(a, b), contrast_ratio(b, a));
+    }
+
+    #[test]
+    fn move_marks_are_readable_on_the_panel() {
+        use crate::chess::review::MoveClass;
+        use crate::ui::graph::class_color;
+
+        for dark in [true, false] {
+            let panel = Palette::new(dark).panel;
+            for class in [
+                MoveClass::Inaccuracy,
+                MoveClass::Mistake,
+                MoveClass::Blunder,
+            ] {
+                let color = class_color(class, dark).expect("marked class");
+                let ratio = contrast_ratio(color, panel);
+                assert!(ratio >= 3.0, "dark={dark} {class:?}: ratio {ratio}");
+            }
+        }
     }
 
     #[test]

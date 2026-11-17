@@ -1,6 +1,7 @@
 use egui::{Color32, FontId, Rect, RichText, Ui, Vec2};
 use shakmaty::{Chess, Position, uci::UciMove};
 
+use super::theme::Palette;
 use crate::engine::{EngineInfo, Score};
 
 /// Share of the bar that belongs to White, from 0 to 1. Uses the same
@@ -12,7 +13,13 @@ pub fn white_fraction(score: Option<&Score>) -> f32 {
 
 /// Draw a vertical evaluation bar filling `rect`, White at the bottom
 /// unless the board is flipped.
-pub fn show_eval_bar(ui: &mut Ui, rect: Rect, score: Option<&Score>, flipped: bool) {
+pub fn show_eval_bar(
+    ui: &mut Ui,
+    rect: Rect,
+    score: Option<&Score>,
+    flipped: bool,
+    palette: &Palette,
+) {
     let target = white_fraction(score);
     let frac = ui
         .ctx()
@@ -36,7 +43,7 @@ pub fn show_eval_bar(ui: &mut Ui, rect: Rect, score: Option<&Score>, flipped: bo
     painter.rect_filled(white_rect, radius, light);
     painter.line_segment(
         [rect.left_center(), rect.right_center()],
-        egui::Stroke::new(1.0_f32, Color32::from_gray(128).gamma_multiply(0.5)),
+        egui::Stroke::new(1.0_f32, palette.text_weak.gamma_multiply(0.5)),
     );
 
     if let Some(score) = score {
@@ -69,7 +76,7 @@ pub fn show_eval_bar(ui: &mut Ui, rect: Rect, score: Option<&Score>, flipped: bo
     painter.rect_stroke(
         rect,
         radius,
-        egui::Stroke::new(1.0_f32, Color32::from_gray(128).gamma_multiply(0.4)),
+        egui::Stroke::new(1.0_f32, palette.text_weak),
         egui::StrokeKind::Inside,
     );
 }
@@ -81,10 +88,11 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
         Color32::from_rgb(30, 30, 30)
     };
 
+    let weak = Palette::new(dark_theme).text_weak;
     if lines.is_empty() {
         ui.label(
             RichText::new("Engine not running")
-                .color(Color32::GRAY)
+                .color(weak)
                 .font(FontId::proportional(12.0))
                 .italics(),
         );
@@ -112,7 +120,7 @@ pub fn show_analysis_panel(ui: &mut Ui, lines: &[EngineInfo], position: &Chess, 
                 egui::Label::new(
                     RichText::new(format!("d{}", info.depth))
                         .font(FontId::proportional(11.0))
-                        .color(Color32::GRAY),
+                        .color(weak),
                 ),
             );
 
@@ -144,7 +152,7 @@ fn eval_color(score: &Score, dark_theme: bool) -> Color32 {
             Color32::from_rgb(170, 0, 0)
         }
     } else {
-        Color32::GRAY
+        Palette::new(dark_theme).text_weak
     }
 }
 

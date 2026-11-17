@@ -79,7 +79,11 @@ pub fn show_game_picker(
                         .show(ui, |ui| {
                             for title in ["#", "White", "Black", "Result", "Moves", "Date / Event"]
                             {
-                                ui.label(RichText::new(title).small().color(Color32::GRAY));
+                                ui.label(
+                                    RichText::new(title)
+                                        .small()
+                                        .color(ui.visuals().weak_text_color()),
+                                );
                             }
                             ui.end_row();
 

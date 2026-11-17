@@ -162,7 +162,9 @@ fn render_move_button(
     let color = if current {
         palette.background
     } else {
-        class.and_then(class_color).unwrap_or(palette.text)
+        class
+            .and_then(|c| class_color(c, palette.dark))
+            .unwrap_or(palette.text)
     };
     let is_main = game.is_main_move(index);
     let text = match class {
