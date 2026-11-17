@@ -746,6 +746,7 @@ impl ChessyApp {
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
+        let weak = Palette::new(self.settings.dark_theme).text_weak;
         let ctx = ui.ctx().clone();
         let menu_item = |ui: &mut Ui, label: &str, shortcut: Option<&egui::KeyboardShortcut>| {
             let mut button = egui::Button::new(label);
@@ -756,7 +757,7 @@ impl ChessyApp {
         };
 
         let section = |ui: &mut Ui, label: &str| {
-            ui.label(RichText::new(label).small().color(Color32::GRAY));
+            ui.label(RichText::new(label).small().color(weak));
         };
 
         egui::MenuBar::new().ui(ui, |ui| {
@@ -941,14 +942,14 @@ impl ChessyApp {
                 };
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("●").small().color(dot_color));
-                    ui.label(RichText::new(engine_status).small().color(Color32::GRAY));
+                    ui.label(RichText::new(engine_status).small().color(weak));
                 });
 
                 if self.engine.is_none() {
                     ui.label(
                         RichText::new("Set the Stockfish path in Settings")
                             .small()
-                            .color(Color32::GRAY),
+                            .color(weak),
                     );
                 }
             });
@@ -960,27 +961,23 @@ impl ChessyApp {
                 }
                 ui.separator();
                 section(ui, "Shortcuts");
-                ui.label(
-                    RichText::new("← / →   navigate moves")
-                        .small()
-                        .color(Color32::GRAY),
-                );
+                ui.label(RichText::new("← / →   navigate moves").small().color(weak));
                 ui.label(
                     RichText::new("Home / End   start / end")
                         .small()
-                        .color(Color32::GRAY),
+                        .color(weak),
                 );
 
-                ui.label(RichText::new("F   flip board").small().color(Color32::GRAY));
+                ui.label(RichText::new("F   flip board").small().color(weak));
                 ui.label(
                     RichText::new("Right-drag   draw arrow (Shift, Ctrl, Alt: colours)")
                         .small()
-                        .color(Color32::GRAY),
+                        .color(weak),
                 );
                 ui.label(
                     RichText::new("Right-click   mark square")
                         .small()
-                        .color(Color32::GRAY),
+                        .color(weak),
                 );
             });
 
@@ -994,7 +991,7 @@ impl ChessyApp {
                     },
                     AppMode::Setup => "Setup",
                 };
-                ui.label(RichText::new(mode_str).small().color(Color32::GRAY));
+                ui.label(RichText::new(mode_str).small().color(weak));
                 if self.engine.is_none() {
                     ui.label(
                         RichText::new("engine offline")
@@ -1204,6 +1201,7 @@ impl ChessyApp {
     }
 
     fn show_review_panel(&mut self, ui: &mut Ui, text_col: Color32) {
+        let weak = Palette::new(self.settings.dark_theme).text_weak;
         if let Some(progress) = self.review_progress() {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
@@ -1233,7 +1231,7 @@ impl ChessyApp {
         };
 
         ui.add_space(4.0);
-        let gray = Color32::GRAY;
+        let gray = weak;
         egui::Grid::new("review_summary")
             .num_columns(5)
             .spacing([10.0, 2.0])
@@ -1268,6 +1266,7 @@ impl ChessyApp {
     }
 
     fn show_play_controls(&mut self, ui: &mut Ui) {
+        let weak = Palette::new(self.settings.dark_theme).text_weak;
         let player_to_move = self.game.positions[self.game.moves.len()].turn() == self.player_color;
         let can_take_back = takeback_plies(self.game.moves.len(), player_to_move) > 0;
         let can_act = self.players_turn();
@@ -1321,15 +1320,16 @@ impl ChessyApp {
             None
         };
         if let Some(text) = status {
-            ui.label(RichText::new(text).small().italics().color(Color32::GRAY));
+            ui.label(RichText::new(text).small().italics().color(weak));
         }
     }
 
     fn show_setup_panel(&mut self, ui: &mut Ui) {
+        let weak = Palette::new(self.settings.dark_theme).text_weak;
         ui.label(RichText::new("Set Up Position").strong());
         ui.add_space(6.0);
 
-        ui.label(RichText::new("Side to move").small().color(Color32::GRAY));
+        ui.label(RichText::new("Side to move").small().color(weak));
 
         ui.horizontal(|ui| {
             if ui
@@ -1352,7 +1352,7 @@ impl ChessyApp {
         ui.label(
             RichText::new("Click a piece, then a square")
                 .small()
-                .color(Color32::GRAY),
+                .color(weak),
         );
 
         let roles = [
@@ -1426,6 +1426,7 @@ impl ChessyApp {
     }
 
     fn show_promotion_dialog(&mut self, ctx: &Context) {
+        let weak = Palette::new(self.settings.dark_theme).text_weak;
         let Some((from, to)) = self.interaction.pending_promotion else {
             return;
         };
@@ -1472,7 +1473,7 @@ impl ChessyApp {
                     if ui.button("Cancel").clicked() {
                         cancelled = true;
                     }
-                    ui.label(RichText::new("Esc").small().color(Color32::GRAY));
+                    ui.label(RichText::new("Esc").small().color(weak));
                 });
             });
 
@@ -1760,7 +1761,13 @@ impl eframe::App for ChessyApp {
                     egui::pos2(board_rect.min.x - bar_space, board_rect.min.y),
                     egui::vec2(EVAL_BAR_WIDTH, board_size),
                 );
-                show_eval_bar(ui, bar_rect, self.eval_score.as_ref(), self.flipped);
+                show_eval_bar(
+                    ui,
+                    bar_rect,
+                    self.eval_score.as_ref(),
+                    self.flipped,
+                    &palette,
+                );
 
                 let is_interactive = match self.mode {
                     AppMode::Analyze => true,

@@ -4,13 +4,16 @@ use crate::chess::review::MoveClass;
 
 pub const GRAPH_HEIGHT: f32 = 64.0;
 
-pub fn class_color(class: MoveClass) -> Option<Color32> {
-    match class {
-        MoveClass::Inaccuracy => Some(Color32::from_rgb(225, 185, 50)),
-        MoveClass::Mistake => Some(Color32::from_rgb(235, 135, 45)),
-        MoveClass::Blunder => Some(Color32::from_rgb(225, 70, 70)),
-        MoveClass::Best | MoveClass::Good => None,
-    }
+/// Darker variants keep the marks readable on a light panel.
+pub fn class_color(class: MoveClass, dark: bool) -> Option<Color32> {
+    let (bright, deep) = match class {
+        MoveClass::Inaccuracy => ((225, 185, 50), (150, 105, 0)),
+        MoveClass::Mistake => ((235, 135, 45), (185, 85, 0)),
+        MoveClass::Blunder => ((225, 70, 70), (190, 35, 35)),
+        MoveClass::Best | MoveClass::Good => return None,
+    };
+    let (r, g, b) = if dark { bright } else { deep };
+    Some(Color32::from_rgb(r, g, b))
 }
 
 pub fn index_at(x: f32, width: f32, points: usize) -> usize {
@@ -69,7 +72,7 @@ pub fn show_eval_graph(
     );
 
     for (i, class) in classes.iter().enumerate() {
-        if let (Some(color), Some(&win)) = (class_color(*class), white_win.get(i + 1)) {
+        if let (Some(color), Some(&win)) = (class_color(*class, true), white_win.get(i + 1)) {
             painter.circle_filled(Pos2::new(x_of(i + 1), y_of(win)), 3.0, color);
         }
     }
@@ -114,10 +117,10 @@ mod tests {
 
     #[test]
     fn only_costly_moves_get_a_colour() {
-        assert!(class_color(MoveClass::Best).is_none());
-        assert!(class_color(MoveClass::Good).is_none());
-        assert!(class_color(MoveClass::Inaccuracy).is_some());
-        assert!(class_color(MoveClass::Mistake).is_some());
-        assert!(class_color(MoveClass::Blunder).is_some());
+        assert!(class_color(MoveClass::Best, true).is_none());
+        assert!(class_color(MoveClass::Good, true).is_none());
+        assert!(class_color(MoveClass::Inaccuracy, true).is_some());
+        assert!(class_color(MoveClass::Mistake, true).is_some());
+        assert!(class_color(MoveClass::Blunder, true).is_some());
     }
 }
