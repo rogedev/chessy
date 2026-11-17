@@ -267,6 +267,8 @@ impl<'a> BoardWidget<'a> {
             None
         };
 
+        self.interaction.annotations.sync(board);
+
         // Draw squares
         for rank_idx in 0..8u32 {
             for file_idx in 0..8u32 {
@@ -290,6 +292,9 @@ impl<'a> BoardWidget<'a> {
                 }
                 if self.interaction.selected == Some(sq) {
                     painter.rect_filled(sq_rect, corners, HIGHLIGHT_SELECTED);
+                }
+                if let Some(mark) = self.interaction.annotations.square_color(sq) {
+                    arrows::draw_square_mark(&painter, sq_rect, mark);
                 }
                 if legal_dests.contains(&sq) {
                     if board.piece_at(sq).is_some() {
@@ -330,8 +335,6 @@ impl<'a> BoardWidget<'a> {
         }
 
         let center = |sq: Square| sq_to_rect(sq, rect, sq_size, self.flipped).center();
-        self.interaction.annotations.sync(board);
-
         if let Some((from, to)) = self.engine_arrow
             // Ignore a stale suggestion from another position.
             && board.piece_at(from).is_some_and(|p| p.color == pos.turn())
@@ -344,23 +347,15 @@ impl<'a> BoardWidget<'a> {
                 arrows::ENGINE_COLOR,
             );
         }
-        for &sq in &self.interaction.annotations.squares {
-            arrows::draw_square_mark(&painter, center(sq), sq_size, arrows::USER_COLOR);
-        }
-        for &(from, to) in &self.interaction.annotations.arrows {
-            arrows::draw_arrow(
-                &painter,
-                center(from),
-                center(to),
-                sq_size,
-                arrows::USER_COLOR,
-            );
+        for &((from, to), mark) in &self.interaction.annotations.arrows {
+            arrows::draw_arrow(&painter, center(from), center(to), sq_size, mark.color(215));
         }
 
         // Works even when moves are not allowed (engine thinking, game over).
         let pointer_sq = ui
-            .input(|i| i.pointer.interact_pos())
+            .input(|i| i.pointer.latest_pos())
             .and_then(|p| pos_to_sq(p, rect, sq_size, self.flipped));
+        let mark_color = ui.input(|i| arrows::MarkColor::from_modifiers(&i.modifiers));
         let secondary = egui::PointerButton::Secondary;
 
         if response.drag_started_by(secondary) {
@@ -372,7 +367,9 @@ impl<'a> BoardWidget<'a> {
             if response.drag_stopped_by(secondary) {
                 self.interaction.annotations.drag_start = None;
                 if let Some(to) = pointer_sq {
-                    self.interaction.annotations.toggle(from, to, board);
+                    self.interaction
+                        .annotations
+                        .toggle(from, to, mark_color, board);
                 }
             } else if let Some(to) = pointer_sq {
                 arrows::draw_arrow(
@@ -380,13 +377,15 @@ impl<'a> BoardWidget<'a> {
                     center(from),
                     center(to),
                     sq_size,
-                    arrows::USER_COLOR,
+                    mark_color.color(150),
                 );
             }
         } else if response.secondary_clicked()
             && let Some(sq) = pointer_sq
         {
-            self.interaction.annotations.toggle(sq, sq, board);
+            self.interaction
+                .annotations
+                .toggle(sq, sq, mark_color, board);
         }
 
         let primary = egui::PointerButton::Primary;
