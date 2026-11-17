@@ -973,7 +973,7 @@ impl ChessyApp {
 
                 ui.label(RichText::new("F   flip board").small().color(Color32::GRAY));
                 ui.label(
-                    RichText::new("Right-drag   draw arrow")
+                    RichText::new("Right-drag   draw arrow (Shift, Ctrl, Alt: colours)")
                         .small()
                         .color(Color32::GRAY),
                 );
